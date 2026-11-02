@@ -1,4 +1,3 @@
-// File: src/app/api/upload/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
@@ -15,12 +14,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+      return NextResponse.json({
+        ok: true,
+        url: dataUrl,
+        filename: 'inline-base64',
+      });
+    }
+
     const matches = dataUrl.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
     if (!matches || matches.length !== 3) {
-      return NextResponse.json(
-        { ok: false, error: 'Không thể tách định dạng ảnh' },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: true, url: dataUrl });
     }
 
     const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
@@ -44,9 +48,9 @@ export async function POST(req: NextRequest) {
       url: `/uploads/${filename}`,
       filename,
     });
-  } catch (error) {
+  } catch {
     return NextResponse.json(
-      { ok: false, error: (error as Error).message },
+      { ok: false, error: 'Không thể xử lý ảnh' },
       { status: 500 }
     );
   }

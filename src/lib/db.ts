@@ -1,5 +1,3 @@
-// File: src/lib/db.ts
-import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import {
@@ -14,10 +12,18 @@ import {
   LEITNER_INTERVAL_DAYS,
 } from '@/constants/taxonomy';
 
-const DB_DIR = path.join(process.cwd(), 'data');
-const DB_FILE = path.join(DB_DIR, 'error_logs.db');
-
-let dbInstance: Database.Database | null = null;
+function getStorageFilePath(): string {
+  const isVercel = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+  const baseDir = isVercel ? '/tmp' : path.join(process.cwd(), 'data');
+  try {
+    if (!fs.existsSync(baseDir)) {
+      fs.mkdirSync(baseDir, { recursive: true });
+    }
+  } catch {
+    return '/tmp/error_logs.json';
+  }
+  return path.join(baseDir, 'error_logs.json');
+}
 
 function addDaysToDate(dateStr: string, days: number): string {
   const d = new Date(dateStr);
@@ -29,141 +35,9 @@ export function getTodayDateString(): string {
   return new Date().toISOString().split('T')[0];
 }
 
-export function getDb(): Database.Database {
-  if (dbInstance) return dbInstance;
-
-  if (!fs.existsSync(DB_DIR)) {
-    fs.mkdirSync(DB_DIR, { recursive: true });
-  }
-
-  const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
-  if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
-  }
-
-  dbInstance = new Database(DB_FILE);
-  dbInstance.pragma('journal_mode = WAL');
-
-  dbInstance.exec(`
-    CREATE TABLE IF NOT EXISTS error_logs (
-      id TEXT PRIMARY KEY,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL,
-      subjectId TEXT NOT NULL,
-      subjectName TEXT NOT NULL,
-      subjectGroup TEXT NOT NULL,
-      topic TEXT NOT NULL,
-      questionFormat TEXT NOT NULL,
-      processBreakpoint TEXT NOT NULL,
-      difficulty INTEGER NOT NULL,
-      timePressure TEXT NOT NULL,
-      questionText TEXT NOT NULL,
-      myWrongStep TEXT NOT NULL,
-      correctSolution TEXT NOT NULL,
-      problemImageUrl TEXT,
-      solutionImageUrl TEXT,
-      referencesJson TEXT NOT NULL,
-      whyCodesJson TEXT NOT NULL,
-      whyCustomNotes TEXT NOT NULL,
-      ifTrigger TEXT NOT NULL,
-      thenAction TEXT NOT NULL,
-      howActionsJson TEXT NOT NULL,
-      inPreExamChecklist INTEGER NOT NULL DEFAULT 0,
-      aiAutopsyJson TEXT,
-      twinQuestionsJson TEXT NOT NULL,
-      leitnerBox INTEGER NOT NULL DEFAULT 1,
-      nextReviewDate TEXT NOT NULL,
-      reviewCount INTEGER NOT NULL DEFAULT 0,
-      isResolved INTEGER NOT NULL DEFAULT 0
-    );
-
-    CREATE TABLE IF NOT EXISTS custom_subjects (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      groupCode TEXT NOT NULL,
-      groupLabel TEXT NOT NULL,
-      defaultTopicsJson TEXT NOT NULL
-    );
-  `);
-
-  seedInitialDataIfEmpty(dbInstance);
-  return dbInstance;
-}
-
-function serializeToRow(item: ErrorLogItem) {
-  return {
-    id: item.id,
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt,
-    subjectId: item.subjectId,
-    subjectName: item.subjectName,
-    subjectGroup: item.subjectGroup,
-    topic: item.topic,
-    questionFormat: item.questionFormat,
-    processBreakpoint: item.processBreakpoint,
-    difficulty: item.difficulty,
-    timePressure: item.timePressure,
-    questionText: item.questionText,
-    myWrongStep: item.myWrongStep,
-    correctSolution: item.correctSolution,
-    problemImageUrl: item.problemImageUrl || null,
-    solutionImageUrl: item.solutionImageUrl || null,
-    referencesJson: JSON.stringify(item.references || []),
-    whyCodesJson: JSON.stringify(item.whyCodes || []),
-    whyCustomNotes: item.whyCustomNotes || '',
-    ifTrigger: item.ifTrigger,
-    thenAction: item.thenAction,
-    howActionsJson: JSON.stringify(item.howActions || []),
-    inPreExamChecklist: item.inPreExamChecklist ? 1 : 0,
-    aiAutopsyJson: item.aiAutopsy ? JSON.stringify(item.aiAutopsy) : null,
-    twinQuestionsJson: JSON.stringify(item.twinQuestions || []),
-    leitnerBox: item.leitnerBox,
-    nextReviewDate: item.nextReviewDate,
-    reviewCount: item.reviewCount,
-    isResolved: item.isResolved ? 1 : 0,
-  };
-}
-
-function deserializeFromRow(row: Record<string, unknown>): ErrorLogItem {
-  return {
-    id: String(row.id),
-    createdAt: String(row.createdAt),
-    updatedAt: String(row.updatedAt),
-    subjectId: String(row.subjectId),
-    subjectName: String(row.subjectName),
-    subjectGroup: row.subjectGroup as ErrorLogItem['subjectGroup'],
-    topic: String(row.topic),
-    questionFormat: row.questionFormat as ErrorLogItem['questionFormat'],
-    processBreakpoint: row.processBreakpoint as ErrorLogItem['processBreakpoint'],
-    difficulty: Number(row.difficulty) as 1 | 2 | 3 | 4 | 5,
-    timePressure: row.timePressure as ErrorLogItem['timePressure'],
-    questionText: String(row.questionText),
-    myWrongStep: String(row.myWrongStep),
-    correctSolution: String(row.correctSolution),
-    problemImageUrl: row.problemImageUrl ? String(row.problemImageUrl) : undefined,
-    solutionImageUrl: row.solutionImageUrl ? String(row.solutionImageUrl) : undefined,
-    references: JSON.parse(String(row.referencesJson || '[]')),
-    whyCodes: JSON.parse(String(row.whyCodesJson || '[]')),
-    whyCustomNotes: String(row.whyCustomNotes || ''),
-    ifTrigger: String(row.ifTrigger),
-    thenAction: String(row.thenAction),
-    howActions: JSON.parse(String(row.howActionsJson || '[]')),
-    inPreExamChecklist: Boolean(row.inPreExamChecklist),
-    aiAutopsy: row.aiAutopsyJson ? JSON.parse(String(row.aiAutopsyJson)) : undefined,
-    twinQuestions: JSON.parse(String(row.twinQuestionsJson || '[]')),
-    leitnerBox: Number(row.leitnerBox) as 1 | 2 | 3 | 4 | 5,
-    nextReviewDate: String(row.nextReviewDate),
-    reviewCount: Number(row.reviewCount),
-    isResolved: Boolean(row.isResolved),
-  };
-}
-
-function seedInitialDataIfEmpty(db: Database.Database) {
-  const countRow = db.prepare('SELECT COUNT(*) as cnt FROM error_logs').get() as { cnt: number };
-  if (countRow.cnt > 0) return;
-
+function getInitialSeedLogs(): ErrorLogItem[] {
   const today = getTodayDateString();
-  const sampleLogs: ErrorLogItem[] = [
+  return [
     {
       id: 'err-seed-calc-01',
       createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
@@ -225,10 +99,10 @@ function seedInitialDataIfEmpty(db: Database.Database) {
           promptLatex:
             'Có bao nhiêu giá trị nguyên của tham số $m$ để hàm số $y = \\frac{x + 2}{x - m}$ nghịch biến trên khoảng $(3; +\\infty)$?',
           options: ['A. Vô số', 'B. 5', 'C. 6', 'D. 4'],
-          correctAnswer: 'C. 6',
+          correctAnswer: 'B. 5',
           trapWarning: 'Cẩn thận thiếu dấu bằng ở điều kiện $m \\le 3$ hoặc quên điều kiện $m > -2$.',
           stepByStepSolution:
-            'Ta có $y\' = \\frac{-m - 2}{(x-m)^2}$. Hàm số nghịch biến trên $(3; +\\infty) \\iff \\begin{cases} -m - 2 < 0 \\\\ m \\notin (3; +\\infty) \\end{cases} \\iff \\begin{cases} m > -2 \\\\ m \\le 3 \\end{cases} \\iff -2 < m \\le 3$. Vì $m \\in \\mathbb{Z}$ nên $m \\in \\{-1, 0, 1, 2, 3\\}$? Kiểm tra lại: $-1, 0, 1, 2, 3$ có 5 giá trị nguyên. (Nếu đề hỏi đồng biến hay nghịch biến cần xét kỹ dấu tử số!).',
+            'Ta có $y\' = \\frac{-m - 2}{(x-m)^2}$. Hàm số nghịch biến trên $(3; +\\infty) \\iff \\begin{cases} -m - 2 < 0 \\\\ m \\notin (3; +\\infty) \\end{cases} \\iff \\begin{cases} m > -2 \\\\ m \\le 3 \\end{cases} \\iff -2 < m \\le 3$. Vì $m \\in \\mathbb{Z}$ nên $m \\in \\{-1, 0, 1, 2, 3\\}$, có 5 giá trị nguyên.',
         },
       ],
       leitnerBox: 1,
@@ -253,7 +127,7 @@ function seedInitialDataIfEmpty(db: Database.Database) {
       myWrongStep:
         'Chọn FALSE vì trong bài nói lý do là "due to grid infrastructure costs" chứ không phải vì "environmentally sustainable".',
       correctSolution:
-        'Đáp án chuẩn là NOT GIVEN. Bài đọc nêu lý do giữ lại biomass là chi phí hạ tầng lưới điện, nhưng hoàn toàn KHÔNG đề cập hay so sánh xem người dân nông thôn có nghĩ biomass bền vững hơn hay không (không có mệnh đề phủ định hay trái ngược trực tiếp về tính bền vững).',
+        'Đáp án chuẩn là NOT GIVEN. Bài đọc nêu lý do giữ lại biomass là chi phí hạ tầng lưới điện, nhưng hoàn toàn KHÔNG đề cập hay so sánh xem người dân nông thôn có nghĩ biomass bền vững hơn hay không.',
       references: [
         {
           id: 'ref-3',
@@ -293,10 +167,10 @@ function seedInitialDataIfEmpty(db: Database.Database) {
       myWrongStep:
         'Tính số mol $NaOH$ phản ứng bằng $0.15\\text{ mol}$ (tỉ lệ 1:1 như este thường) dẫn đến khối lượng chất rắn bị sai.',
       correctSolution:
-        'Phenyl axetat là este của phenol nên phản ứng theo tỉ lệ $1:2$: $CH_3COOC_6H_5 + 2NaOH \\rightarrow CH_3COONa + C_6H_5ONa + H_2O$. Số mol $NaOH$ phản ứng $= 0.3\\text{ mol}$, dư $0.1\\text{ mol}$. Chất rắn gồm $0.15\\text{ mol } CH_3COONa (82) + 0.15\\text{ mol } C_6H_5ONa (116) + 0.1\\text{ mol } NaOH_{\\text{dư}} (40) = 33.7\\text{ gam}$.',
+        'Phenyl axetat là este của phenol nên phản ứng theo tỉ lệ $1:2$: $CH_3COOC_6H_5 + 2NaOH \\rightarrow CH_3COONa + C_6H_5ONa + H_2O$. Chất rắn gồm $0.15\\text{ mol } CH_3COONa (82) + 0.15\\text{ mol } C_6H_5ONa (116) + 0.1\\text{ mol } NaOH_{\\text{dư}} (40) = 33.7\\text{ gam}$.',
       references: [],
       whyCodes: ['B3', 'A3'],
-      whyCustomNotes: 'Quên nhân 2 số mol NaOH cho góc phenol và quên cộng lượng NaOH dư.',
+      whyCustomNotes: 'Quên nhân 2 số mol NaOH cho gốc phenol và quên cộng lượng NaOH dư.',
       ifTrigger: 'Đề bài thủy phân este có vòng benzen gắn trực tiếp vào nguyên tử Oxi của nhóm $-COO-$ (este của phenol)',
       thenAction: 'Viết ngay tỉ lệ $n_{NaOH} = 2 n_{\\text{este phenol}}$ và dùng Bảo toàn khối lượng: $m_{\\text{rắn}} = m_{\\text{este}} + m_{NaOH \\text{ ban đầu}} - m_{H_2O}$ với $n_{H_2O} = n_{\\text{este phenol}}$.',
       howActions: ['H1', 'H2', 'H4'],
@@ -308,42 +182,48 @@ function seedInitialDataIfEmpty(db: Database.Database) {
       isResolved: false,
     },
   ];
-
-  const insertStmt = db.prepare(`
-    INSERT INTO error_logs (
-      id, createdAt, updatedAt, subjectId, subjectName, subjectGroup, topic,
-      questionFormat, processBreakpoint, difficulty, timePressure,
-      questionText, myWrongStep, correctSolution, problemImageUrl, solutionImageUrl,
-      referencesJson, whyCodesJson, whyCustomNotes, ifTrigger, thenAction,
-      howActionsJson, inPreExamChecklist, aiAutopsyJson, twinQuestionsJson,
-      leitnerBox, nextReviewDate, reviewCount, isResolved
-    ) VALUES (
-      @id, @createdAt, @updatedAt, @subjectId, @subjectName, @subjectGroup, @topic,
-      @questionFormat, @processBreakpoint, @difficulty, @timePressure,
-      @questionText, @myWrongStep, @correctSolution, @problemImageUrl, @solutionImageUrl,
-      @referencesJson, @whyCodesJson, @whyCustomNotes, @ifTrigger, @thenAction,
-      @howActionsJson, @inPreExamChecklist, @aiAutopsyJson, @twinQuestionsJson,
-      @leitnerBox, @nextReviewDate, @reviewCount, @isResolved
-    )
-  `);
-
-  const insertMany = db.transaction((items: ErrorLogItem[]) => {
-    for (const item of items) {
-      insertStmt.run(serializeToRow(item));
-    }
-  });
-
-  insertMany(sampleLogs);
 }
 
-// Đồng bộ dự phòng không chặn (Non-blocking mirror) lên Supabase REST nếu người dùng cần
+function readLogsFromDisk(): ErrorLogItem[] {
+  const filePath = getStorageFilePath();
+  try {
+    if (!fs.existsSync(filePath)) {
+      const seeds = getInitialSeedLogs();
+      fs.writeFileSync(filePath, JSON.stringify(seeds, null, 2), 'utf-8');
+      return seeds;
+    }
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed;
+    }
+    const seeds = getInitialSeedLogs();
+    fs.writeFileSync(filePath, JSON.stringify(seeds, null, 2), 'utf-8');
+    return seeds;
+  } catch {
+    return getInitialSeedLogs();
+  }
+}
+
+function writeLogsToDisk(logs: ErrorLogItem[]): void {
+  const filePath = getStorageFilePath();
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(logs, null, 2), 'utf-8');
+  } catch {
+    // Fallback an toàn trên môi trường đám mây
+  }
+}
+
 async function mirrorToSupabaseIfConfigured(item: ErrorLogItem) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!supabaseUrl || !supabaseKey) return;
 
   try {
-    const endpoint = `${supabaseUrl.replace(/\/$/, '')}/error_logs`;
+    const baseUrl = supabaseUrl.replace(/\/$/, '');
+    const endpoint = baseUrl.endsWith('/rest/v1')
+      ? `${baseUrl}/error_logs`
+      : `${baseUrl}/rest/v1/error_logs`;
     await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -364,83 +244,40 @@ async function mirrorToSupabaseIfConfigured(item: ErrorLogItem) {
       }),
     });
   } catch {
-    // Hoạt động độc lập 100% offline trên SQLite nội bộ ngay cả khi không có mạng
+    // Hoạt động độc lập
   }
 }
 
 export function getAllErrorLogs(): ErrorLogItem[] {
-  const db = getDb();
-  const rows = db
-    .prepare('SELECT * FROM error_logs ORDER BY datetime(createdAt) DESC')
-    .all() as Record<string, unknown>[];
-  return rows.map(deserializeFromRow);
+  const logs = readLogsFromDisk();
+  return logs.sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
 }
 
 export function getErrorLogById(id: string): ErrorLogItem | null {
-  const db = getDb();
-  const row = db
-    .prepare('SELECT * FROM error_logs WHERE id = ?')
-    .get(id) as Record<string, unknown> | undefined;
-  return row ? deserializeFromRow(row) : null;
+  const logs = readLogsFromDisk();
+  return logs.find((l) => l.id === id) || null;
 }
 
 export function upsertErrorLog(item: ErrorLogItem): ErrorLogItem {
-  const db = getDb();
-  const stmt = db.prepare(`
-    INSERT INTO error_logs (
-      id, createdAt, updatedAt, subjectId, subjectName, subjectGroup, topic,
-      questionFormat, processBreakpoint, difficulty, timePressure,
-      questionText, myWrongStep, correctSolution, problemImageUrl, solutionImageUrl,
-      referencesJson, whyCodesJson, whyCustomNotes, ifTrigger, thenAction,
-      howActionsJson, inPreExamChecklist, aiAutopsyJson, twinQuestionsJson,
-      leitnerBox, nextReviewDate, reviewCount, isResolved
-    ) VALUES (
-      @id, @createdAt, @updatedAt, @subjectId, @subjectName, @subjectGroup, @topic,
-      @questionFormat, @processBreakpoint, @difficulty, @timePressure,
-      @questionText, @myWrongStep, @correctSolution, @problemImageUrl, @solutionImageUrl,
-      @referencesJson, @whyCodesJson, @whyCustomNotes, @ifTrigger, @thenAction,
-      @howActionsJson, @inPreExamChecklist, @aiAutopsyJson, @twinQuestionsJson,
-      @leitnerBox, @nextReviewDate, @reviewCount, @isResolved
-    )
-    ON CONFLICT(id) DO UPDATE SET
-      updatedAt = excluded.updatedAt,
-      subjectId = excluded.subjectId,
-      subjectName = excluded.subjectName,
-      subjectGroup = excluded.subjectGroup,
-      topic = excluded.topic,
-      questionFormat = excluded.questionFormat,
-      processBreakpoint = excluded.processBreakpoint,
-      difficulty = excluded.difficulty,
-      timePressure = excluded.timePressure,
-      questionText = excluded.questionText,
-      myWrongStep = excluded.myWrongStep,
-      correctSolution = excluded.correctSolution,
-      problemImageUrl = excluded.problemImageUrl,
-      solutionImageUrl = excluded.solutionImageUrl,
-      referencesJson = excluded.referencesJson,
-      whyCodesJson = excluded.whyCodesJson,
-      whyCustomNotes = excluded.whyCustomNotes,
-      ifTrigger = excluded.ifTrigger,
-      thenAction = excluded.thenAction,
-      howActionsJson = excluded.howActionsJson,
-      inPreExamChecklist = excluded.inPreExamChecklist,
-      aiAutopsyJson = excluded.aiAutopsyJson,
-      twinQuestionsJson = excluded.twinQuestionsJson,
-      leitnerBox = excluded.leitnerBox,
-      nextReviewDate = excluded.nextReviewDate,
-      reviewCount = excluded.reviewCount,
-      isResolved = excluded.isResolved
-  `);
-
-  stmt.run(serializeToRow(item));
+  const logs = readLogsFromDisk();
+  const idx = logs.findIndex((l) => l.id === item.id);
+  if (idx >= 0) {
+    logs[idx] = item;
+  } else {
+    logs.unshift(item);
+  }
+  writeLogsToDisk(logs);
   void mirrorToSupabaseIfConfigured(item);
   return item;
 }
 
 export function deleteErrorLog(id: string): boolean {
-  const db = getDb();
-  const info = db.prepare('DELETE FROM error_logs WHERE id = ?').run(id);
-  return info.changes > 0;
+  const logs = readLogsFromDisk();
+  const next = logs.filter((l) => l.id !== id);
+  writeLogsToDisk(next);
+  return next.length !== logs.length;
 }
 
 export function updateLeitnerReview(
@@ -494,13 +331,11 @@ export function computeDashboardAnalytics(logs: ErrorLogItem[]): DashboardAnalyt
     (l) => !l.isResolved && l.nextReviewDate <= today
   ).length;
 
-  // 1. Tính "Thuế Ẩu" (Careless Mistake Tax) - Tỷ lệ bản ghi có chứa mã lỗi Nhóm A (A1..A7)
   const logsWithCareless = logs.filter((l) =>
     l.whyCodes.some((code) => code.startsWith('A'))
   );
   const carelessTaxPercent = Math.round((logsWithCareless.length / totalLogs) * 100);
 
-  // 2. Phân rã theo từng môn học
   const subjectMap = new Map<
     string,
     { total: number; carelessCount: number; knowledgeCount: number; trapCount: number }
@@ -528,7 +363,6 @@ export function computeDashboardAnalytics(logs: ErrorLogItem[]): DashboardAnalyt
     })
   );
 
-  // 3. Phân tích Pareto 80/20 trên toàn bộ mã WHY
   const whyCounter = new Map<WhyCode, number>();
   let totalWhyTagsSelected = 0;
 
@@ -550,7 +384,10 @@ export function computeDashboardAnalytics(logs: ErrorLogItem[]): DashboardAnalyt
       totalWhyTagsSelected > 0
         ? Math.round((count / totalWhyTagsSelected) * 1000) / 10
         : 0;
-    runningCumulative = Math.min(100, Math.round((runningCumulative + percentage) * 10) / 10);
+    runningCumulative = Math.min(
+      100,
+      Math.round((runningCumulative + percentage) * 10) / 10
+    );
 
     return {
       code,
@@ -562,7 +399,6 @@ export function computeDashboardAnalytics(logs: ErrorLogItem[]): DashboardAnalyt
     };
   });
 
-  // 4. Phễu Điểm Gãy Quy Trình (Stage 1 -> Stage 4)
   const stageCounts = new Map<ProcessBreakpoint, number>();
   for (const log of logs) {
     stageCounts.set(

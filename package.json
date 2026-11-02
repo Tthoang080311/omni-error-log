@@ -11,7 +11,6 @@
     "elog:report": "tsx bin/elog.ts report"
   },
   "dependencies": {
-    "better-sqlite3": "^11.3.0",
     "clsx": "^2.1.1",
     "katex": "^0.16.11",
     "lucide-react": "^0.446.0",
@@ -21,7 +20,6 @@
     "tailwind-merge": "^2.5.2"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.7.4",
     "@types/react": "^18.3.10",
     "@types/react-dom": "^18.3.0",
