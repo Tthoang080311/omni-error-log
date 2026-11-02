@@ -78,8 +78,133 @@ const LOCAL_OUTBOX_KEY = 'OMNI_ERROR_LOG_OUTBOX_V1';
 const LOCAL_IME_MODE_KEY = 'OMNI_VN_IME_MODE';
 
 // ============================================================================
+// HÀM CHUẨN HÓA DỮ LIỆU CHỐNG SẬP (.twinQuestions.length, .whyCodes, .references)
+// ============================================================================
+function sanitizeLogItem(raw: any): ErrorLogItem {
+  const base =
+    raw?.payload && typeof raw.payload === 'object'
+      ? { ...raw, ...raw.payload }
+      : { ...(raw || {}) };
+
+  const subId = base.subjectId || base.subject_id || base.subject || 'MATH';
+  const subDef = INITIAL_SUBJECTS.find((s) => s.id === subId);
+  const leitnerBox = (Number(base.leitnerBox ?? base.leitner_box ?? 1) ||
+    1) as ErrorLogItem['leitnerBox'];
+
+  return {
+    ...base,
+    id: String(
+      base.id || `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    ),
+    subjectId: subId,
+    subjectName:
+      base.subjectName || base.subject_name || subDef?.name || String(subId),
+    topic: String(base.topic ?? ''),
+    questionText: String(
+      base.questionText ?? base.question_text ?? base.question ?? ''
+    ),
+    problemImageUrl: base.problemImageUrl ?? base.problem_image_url ?? undefined,
+    myWrongStep: String(
+      base.myWrongStep ?? base.my_wrong_step ?? base.myAnswer ?? ''
+    ),
+    correctSolution: String(
+      base.correctSolution ?? base.correct_solution ?? base.correctAnswer ?? ''
+    ),
+    processBreakpoint:
+      base.processBreakpoint ?? base.process_breakpoint ?? 'DECODE',
+    whyCodes: Array.isArray(base.whyCodes)
+      ? base.whyCodes
+      : Array.isArray(base.why_codes)
+        ? base.why_codes
+        : [],
+    ifTrigger: String(base.ifTrigger ?? base.if_trigger ?? ''),
+    thenAction: String(
+      base.thenAction ?? base.then_action ?? base.actionPlan ?? ''
+    ),
+    twinQuestions: Array.isArray(base.twinQuestions)
+      ? base.twinQuestions
+      : Array.isArray(base.twin_questions)
+        ? base.twin_questions
+        : [],
+    references: Array.isArray(base.references) ? base.references : [],
+    leitnerBox,
+    nextReviewDate: String(
+      base.nextReviewDate ??
+        base.next_review_date ??
+        getLocalTodayDateString()
+    ),
+    isResolved: Boolean(base.isResolved ?? base.is_resolved ?? leitnerBox >= 4),
+    createdAt: String(
+      base.createdAt ?? base.created_at ?? new Date().toISOString()
+    ),
+    updatedAt: String(
+      base.updatedAt ?? base.updated_at ?? new Date().toISOString()
+    ),
+  };
+}
+
+function sanitizeLogList(list: unknown): ErrorLogItem[] {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => sanitizeLogItem(item));
+}
+
+// ============================================================================
+// COMPONENT ĐỒNG HỒ REALTIME (MEMO HÓA ĐỂ KHÔNG GÂY RE-RENDER TOÀN TRANG)
+// ============================================================================
+const RealtimeClockBadge = memo(function RealtimeClockBadge() {
+  const [now, setNow] = useState<Date | null>(null);
+
+  useEffect(() => {
+    setNow(new Date());
+    const timer = window.setInterval(() => {
+      setNow(new Date());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  if (!now) {
+    return (
+      <div className="inline-flex items-center gap-1.5 rounded-lg border border-botanical-border bg-botanical-canvas px-2.5 py-1 font-mono text-[11px] font-bold text-botanical-ink">
+        <Clock className="h-3.5 w-3.5 text-botanical-sage" />
+        <span>--:--:--</span>
+      </div>
+    );
+  }
+
+  const timeStr = now.toLocaleTimeString('vi-VN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+
+  const dateStr = now.toLocaleDateString('vi-VN', {
+    weekday: 'short',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+
+  return (
+    <div
+      title="Đồng hồ thời gian thực (Realtime Clock)"
+      className="inline-flex items-center gap-1.5 rounded-lg border border-botanical-border bg-botanical-canvas px-2.5 py-1 text-[11px] shadow-sm"
+    >
+      <Clock className="h-3.5 w-3.5 animate-pulse text-botanical-sage" />
+      <span className="font-mono font-extrabold tracking-tight text-botanical-ink">
+        {timeStr}
+      </span>
+      <span className="hidden border-l border-botanical-border pl-1.5 font-medium text-botanical-muted sm:inline">
+        {dateStr}
+      </span>
+    </div>
+  );
+});
+
+// ============================================================================
 // 0. ENGINE TÍNH TOÁN THỐNG KÊ PARETO 80/20, THUẾ ẨU & LEITNER TRỰC TIẾP
-//    (Khắc phục triệt để lỗi SQLite rỗng trên Vercel trả về Analytics = 0)
 // ============================================================================
 function getLocalTodayDateString(): string {
   const now = new Date();
@@ -90,10 +215,11 @@ function getLocalTodayDateString(): string {
 }
 
 function computeRealtimeAnalytics(
-  items: ErrorLogItem[],
+  rawItems: ErrorLogItem[],
   serverAnalytics?: DashboardAnalytics
 ): DashboardAnalytics {
-  // Nếu server SQLite đã tính sẵn và khớp chính xác số lượng bản ghi thì ưu tiên dùng
+  const items = sanitizeLogList(rawItems);
+
   if (
     serverAnalytics &&
     serverAnalytics.totalLogs === items.length &&
@@ -117,7 +243,7 @@ function computeRealtimeAnalytics(
 
   // 1. Tính Thuế Ẩu (Tỷ lệ bản ghi dính ít nhất 1 mã lỗi Nhóm A)
   const carelessItemsCount = items.filter((it) =>
-    it.whyCodes?.some((code) => String(code).startsWith('A'))
+    (it.whyCodes || []).some((code) => String(code).startsWith('A'))
   ).length;
   const carelessTaxPercent =
     totalLogs > 0 ? Math.round((carelessItemsCount / totalLogs) * 100) : 0;
@@ -214,7 +340,7 @@ function computeRealtimeAnalytics(
     ({ subjectId, subjectName, list }) => {
       const subTotal = list.length;
       const carelessCount = list.filter((it) =>
-        it.whyCodes?.some((c) => String(c).startsWith('A'))
+        (it.whyCodes || []).some((c) => String(c).startsWith('A'))
       ).length;
       const knowledgeCount = subTotal - carelessCount;
       const carelessPercent =
@@ -602,12 +728,18 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
     PROCESS_BREAKPOINTS.find((b) => b.id === item.processBreakpoint)?.title ||
     item.processBreakpoint;
 
+  const twinCount = Array.isArray(item.twinQuestions)
+    ? item.twinQuestions.length
+    : 0;
+  const safeWhyCodes = Array.isArray(item.whyCodes) ? item.whyCodes : [];
+  const safeReferences = Array.isArray(item.references) ? item.references : [];
+
   return (
     <article
       style={{ contentVisibility: 'auto', containIntrinsicSize: '260px' }}
       className="botanical-paper-card rounded-xl p-5"
     >
-      {/* Dòng мета trên cùng của thẻ */}
+      {/* Dòng meta trên cùng của thẻ */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-botanical-border pb-2.5">
         <div className="flex flex-wrap items-center gap-2">
           <span className="rounded-md bg-botanical-sage px-2.5 py-0.5 font-mono text-xs font-bold text-white">
@@ -631,7 +763,7 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
             className="inline-flex items-center gap-1.5 rounded-lg border border-botanical-terracotta bg-botanical-terracottaBg px-3 py-1 text-xs font-bold text-botanical-terracotta transition hover:bg-botanical-terracotta hover:text-white"
           >
             <Sparkles className="h-3.5 w-3.5" />
-            Phòng Khám AI &amp; Bài Tập Sinh Đôi ({item.twinQuestions.length})
+            Phòng Khám AI &amp; Bài Tập Sinh Đôi ({twinCount})
           </button>
 
           <button
@@ -692,7 +824,7 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
           </div>
 
           <div className="flex flex-wrap gap-1.5 pt-1">
-            {item.whyCodes.map((code) => {
+            {safeWhyCodes.map((code) => {
               const def = WHY_DICTIONARY.find((w) => w.code === code);
               return (
                 <span
@@ -723,9 +855,9 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
           </div>
 
           {/* Nguồn tham chiếu YouTube ?t= / Sách */}
-          {item.references.length > 0 && (
+          {safeReferences.length > 0 && (
             <div className="space-y-1 border-t border-botanical-border pt-2">
-              {item.references.map((ref) => (
+              {safeReferences.map((ref) => (
                 <div
                   key={ref.id}
                   className="flex items-center justify-between gap-1 text-[11px]"
@@ -810,10 +942,11 @@ export default function OmniErrorLogAppPage() {
   // Hàm đồng bộ nhất quán cả danh sách `logs` lẫn `analytics` trên toàn ứng dụng
   const applyLogsAndAnalytics = useCallback(
     (
-      nextLogs: ErrorLogItem[],
+      rawNextLogs: ErrorLogItem[],
       serverAnalytics?: DashboardAnalytics,
       shouldBroadcast = true
     ) => {
+      const nextLogs = sanitizeLogList(rawNextLogs);
       const computedAnalytics = computeRealtimeAnalytics(
         nextLogs,
         serverAnalytics
@@ -876,8 +1009,8 @@ export default function OmniErrorLogAppPage() {
             }).catch(() => null);
             const cloudOk = action.payload.updatedItem
               ? await upsertLogsToSupabase(
-                  action.payload.updatedItem as ErrorLogItem
-                )
+                  sanitizeLogItem(action.payload.updatedItem)
+                ).catch(() => false)
               : false;
             if (!res?.ok && !cloudOk) remaining.push(action);
           } else if (action.type === 'REVIEW_GRADE') {
@@ -893,7 +1026,7 @@ export default function OmniErrorLogAppPage() {
               `/api/logs?id=${encodeURIComponent(id)}`,
               { method: 'DELETE' }
             ).catch(() => null);
-            const cloudOk = await deleteLogFromSupabase(id);
+            const cloudOk = await deleteLogFromSupabase(id).catch(() => false);
             if (!res?.ok && !cloudOk) remaining.push(action);
           }
         } catch {
@@ -951,22 +1084,25 @@ export default function OmniErrorLogAppPage() {
 
       try {
         await flushOfflineOutbox();
-        const [localRes, cloudLogs] = await Promise.all([
+        const [localRes, rawCloudLogs] = await Promise.all([
           fetch('/api/logs', { cache: 'no-store' })
             .then((r) => r.json())
             .catch(() => ({ ok: false, logs: [] })),
-          fetchAllLogsFromSupabase(),
+          fetchAllLogsFromSupabase().catch(() => null),
         ]);
 
         const localLogs: ErrorLogItem[] =
           localRes && localRes.ok && Array.isArray(localRes.logs)
-            ? localRes.logs
+            ? sanitizeLogList(localRes.logs)
             : [];
+
+        const cloudLogs =
+          rawCloudLogs !== null ? sanitizeLogList(rawCloudLogs) : null;
 
         if (localRes?.ok || cloudLogs !== null) {
           let mergedLogs: ErrorLogItem[] = [...localLogs];
 
-          // Hợp nhất 2 chiều giữa SQLite nội bộ và Supabase Cloud
+          // Hợp nhất 2 chiều giữa API và Supabase Cloud
           if (cloudLogs !== null) {
             const byId = new Map<string, ErrorLogItem>();
             mergedLogs.forEach((item) => byId.set(item.id, item));
@@ -993,7 +1129,7 @@ export default function OmniErrorLogAppPage() {
             });
 
             if (toPushToCloud.length > 0) {
-              void upsertLogsToSupabase(toPushToCloud);
+              void upsertLogsToSupabase(toPushToCloud).catch(() => false);
             }
 
             mergedLogs = Array.from(byId.values()).sort(
@@ -1021,7 +1157,9 @@ export default function OmniErrorLogAppPage() {
               second: '2-digit',
             })
           );
-          setSyncStatus(cloudLogs !== null ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
+          setSyncStatus(
+            cloudLogs !== null || localRes?.ok ? 'LIVE_CLOUD' : 'LIVE_LOCAL'
+          );
         } else {
           setSyncStatus('ERROR');
         }
@@ -1031,7 +1169,11 @@ export default function OmniErrorLogAppPage() {
           if (cached && logs.length === 0) {
             const parsed = JSON.parse(cached);
             if (Array.isArray(parsed.logs)) {
-              applyLogsAndAnalytics(parsed.logs, parsed.analytics, false);
+              applyLogsAndAnalytics(
+                sanitizeLogList(parsed.logs),
+                parsed.analytics,
+                false
+              );
             }
           }
         } catch {
@@ -1087,7 +1229,7 @@ export default function OmniErrorLogAppPage() {
           msg.signature !== lastPayloadSignatureRef.current
         ) {
           lastPayloadSignatureRef.current = msg.signature;
-          const incomingLogs: ErrorLogItem[] = msg.logs || [];
+          const incomingLogs = sanitizeLogList(msg.logs);
           setLogs(incomingLogs);
           setAnalytics(
             computeRealtimeAnalytics(incomingLogs, msg.analytics)
@@ -1314,7 +1456,7 @@ export default function OmniErrorLogAppPage() {
       }
       if (
         deferredWhyFilter !== 'ALL' &&
-        !item.whyCodes.includes(deferredWhyFilter as never)
+        !(item.whyCodes || []).includes(deferredWhyFilter as never)
       ) {
         return false;
       }
@@ -1327,7 +1469,8 @@ export default function OmniErrorLogAppPage() {
   }, [logs, deferredSubjectFilter, deferredWhyFilter, deferredSearchQuery]);
 
   const handleUpdateLogItem = useCallback(
-    async (updated: ErrorLogItem) => {
+    async (rawUpdated: ErrorLogItem) => {
+      const updated = sanitizeLogItem(rawUpdated);
       const optimisticLogs = logs.map((it) =>
         it.id === updated.id ? updated : it
       );
@@ -1345,14 +1488,14 @@ export default function OmniErrorLogAppPage() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ updatedItem: updated }),
           }).catch(() => null),
-          upsertLogsToSupabase(updated),
+          upsertLogsToSupabase(updated).catch(() => false),
         ]);
         const data = res ? await res.json().catch(() => null) : null;
         if (data?.ok || cloudOk) {
           if (forensicModalItem?.id === updated.id && data?.item) {
-            setForensicModalItem(data.item);
+            setForensicModalItem(sanitizeLogItem(data.item));
           }
-          setSyncStatus(cloudOk ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
+          setSyncStatus(cloudOk || data?.ok ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
           setLastSyncedAt(
             new Date().toLocaleTimeString('vi-VN', {
               hour: '2-digit',
@@ -1377,7 +1520,6 @@ export default function OmniErrorLogAppPage() {
 
   const handleReviewGrade = useCallback(
     async (id: string, rememberedCorrectly: boolean) => {
-      // Tính toán hộp Leitner & ngày ôn tiếp theo ngay trên Client để đồng bộ cả lên Supabase
       const intervals: Record<number, number> = {
         1: 1,
         2: 3,
@@ -1398,13 +1540,13 @@ export default function OmniErrorLogAppPage() {
         nextDate.setDate(nextDate.getDate() + daysToAdd);
         const nextReviewDate = nextDate.toISOString().slice(0, 10);
 
-        updatedTargetItem = {
+        updatedTargetItem = sanitizeLogItem({
           ...it,
           leitnerBox: nextBox as ErrorLogItem['leitnerBox'],
           nextReviewDate,
           isResolved: nextBox >= 4,
           updatedAt: new Date().toISOString(),
-        };
+        });
         return updatedTargetItem;
       });
 
@@ -1423,12 +1565,12 @@ export default function OmniErrorLogAppPage() {
             }),
           }).catch(() => null),
           updatedTargetItem
-            ? upsertLogsToSupabase(updatedTargetItem)
+            ? upsertLogsToSupabase(updatedTargetItem).catch(() => false)
             : Promise.resolve(false),
         ]);
         const data = res ? await res.json().catch(() => null) : null;
         if (data?.ok || cloudOk) {
-          setSyncStatus(cloudOk ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
+          setSyncStatus(cloudOk || data?.ok ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
           setLastSyncedAt(
             new Date().toLocaleTimeString('vi-VN', {
               hour: '2-digit',
@@ -1460,11 +1602,11 @@ export default function OmniErrorLogAppPage() {
           fetch(`/api/logs?id=${encodeURIComponent(id)}`, {
             method: 'DELETE',
           }).catch(() => null),
-          deleteLogFromSupabase(id),
+          deleteLogFromSupabase(id).catch(() => false),
         ]);
         const data = res ? await res.json().catch(() => null) : null;
         if (data?.ok || cloudOk) {
-          setSyncStatus(cloudOk ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
+          setSyncStatus(cloudOk || data?.ok ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
           setLastSyncedAt(
             new Date().toLocaleTimeString('vi-VN', {
               hour: '2-digit',
@@ -1481,7 +1623,7 @@ export default function OmniErrorLogAppPage() {
   );
 
   const handleStartEditCard = useCallback((item: ErrorLogItem) => {
-    setEditingItem(item);
+    setEditingItem(sanitizeLogItem(item));
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
@@ -1495,7 +1637,7 @@ export default function OmniErrorLogAppPage() {
               <BookOpen className="h-5 w-5" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-base font-extrabold tracking-tight text-botanical-ink">
                   OMNI-SUBJECT SMART ERROR LOG
                 </h1>
@@ -1564,8 +1706,11 @@ export default function OmniErrorLogAppPage() {
             </button>
           </nav>
 
-          {/* Nút Đồng bộ Trực tiếp, Bộ gõ Tiếng Việt dự phòng, Cmd+K, Xuất Anki & Cài đặt AI Key */}
+          {/* Đồng hồ Realtime, Nút Đồng bộ Trực tiếp, Bộ gõ Tiếng Việt dự phòng, Cmd+K, Xuất Anki & Cài đặt AI Key */}
           <div className="flex flex-wrap items-center gap-1.5">
+            {/* ĐỒNG HỒ REALTIME */}
+            <RealtimeClockBadge />
+
             <div className="inline-flex items-center rounded-lg border border-botanical-border bg-botanical-canvas p-0.5 text-[11px]">
               <button
                 type="button"
@@ -1728,7 +1873,8 @@ export default function OmniErrorLogAppPage() {
               editingItem={editingItem}
               customApiKey={customApiKey}
               onCancelEdit={() => setEditingItem(null)}
-              onSaveSuccess={async (savedItem, openTwinModal) => {
+              onSaveSuccess={async (rawSavedItem, openTwinModal) => {
+                const savedItem = sanitizeLogItem(rawSavedItem);
                 setEditingItem(null);
                 // Cập nhật Optimistic tức thì cả danh sách và bộ chỉ số Analytics (0ms)
                 const nextLogs = [
@@ -1742,7 +1888,7 @@ export default function OmniErrorLogAppPage() {
                 }
 
                 // Chờ đẩy xong lên Supabase rồi mới đồng bộ lại
-                await upsertLogsToSupabase(savedItem);
+                await upsertLogsToSupabase(savedItem).catch(() => false);
                 await fetchAllData(true);
               }}
             />
@@ -1766,7 +1912,7 @@ export default function OmniErrorLogAppPage() {
                 {/* Bộ lọc Tìm kiếm, Môn học & Mã lỗi WHY */}
                 <div className="flex flex-wrap items-center gap-2">
                   <div className="relative">
-                    <Search className=" absolute left-2.5 top-2 h-3.5 w-3.5 text-botanical-muted" />
+                    <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-botanical-muted" />
                     <input
                       type="text"
                       value={searchQuery}
