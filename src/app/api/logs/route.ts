@@ -1,150 +1,211 @@
 // File: src/app/api/logs/route.ts
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { ErrorLogItem, DashboardAnalytics } from '@/types/error-log';
+import { WHY_DICTIONARY, PROCESS_BREAKPOINTS, INITIAL_SUBJECTS } from '@/constants/taxonomy';
 
-// Khởi tạo Supabase Client
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseKey);
+export const dynamic = 'force-dynamic';
 
-// Hàm tính toán Analytics trả về cho Frontend
-function calculateAnalytics(logs: any[]) {
-  const totalLogs = logs.length;
-  const resolvedCount = logs.filter(l => l.leitnerBox > 5).length; // Giả định box > 5 là đã master
-  
-  // Tính Thuế Ẩu (Careless Tax)
-  const carelessLogs = logs.filter(l => l.whyCodes?.includes('CARELESS') || l.whyCodes?.includes('W01'));
-  const carelessTaxPercent = totalLogs === 0 ? 0 : Math.round((carelessLogs.length / totalLogs) * 100);
+const SUPABASE_REST_URL =
+  process.env.NEXT_PUBLIC_SUPABASE_REST_URL ||
+  process.env.SUPABASE_REST_URL ||
+  'https://igetygmsrksbhfhismat.supabase.co/rest/v1';
 
-  // Phễu điểm gãy (Process Breakpoint Funnel)
-  const funnels = [
-    { id: 'DECODE', count: 0 },
-    { id: 'PLAN', count: 0 },
-    { id: 'EXECUTE', count: 0 },
-    { id: 'VERIFY', count: 0 }
-  ];
-  logs.forEach(l => {
-    const stage = funnels.find(f => f.id === l.processBreakpoint);
-    if (stage) stage.count++;
+const SUPABASE_ANON_KEY =
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  process.env.SUPABASE_ANON_KEY ||
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6lnlnZXR5Z21zcmtzYmhmaGlzbWF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIyODg5MTAsImV4cCI6MjEwNzg2NDkxMH0.KsK-fHAZrArAFzYgqXr96Ni9mClWxGJPGd9E88yCXD4';
+
+function getHeaders(prefer?: string): HeadersInit {
+  const headers: Record<string, string> = {
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    'Content-Type': 'application/json',
+  };
+  if (prefer) headers['Prefer'] = prefer;
+  return headers;
+}
+
+async function fetchLogsFromCloud(): Promise<ErrorLogItem[]> {
+  try {
+    const res = await fetch(
+      `${SUPABASE_REST_URL}/omni_error_logs?select=payload&order=updated_at.desc`,
+      {
+        method: 'GET',
+        headers: getHeaders(),
+        cache: 'no-store',
+      }
+    );
+    if (!res.ok) return [];
+    const rows: Array<{ payload: ErrorLogItem }> = await res.json();
+    return rows.map((r) => r.payload);
+  } catch {
+    return [];
+  }
+}
+
+function computeAnalytics(items: ErrorLogItem[]): DashboardAnalytics {
+  const totalLogs = items.length;
+  const resolvedCount = items.filter((it) => (it.leitnerBox ?? 1) >= 4).length;
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const dueTodayCount = items.filter((it) => {
+    if ((it.leitnerBox ?? 1) >= 5 && it.isResolved) return false;
+    if (!it.nextReviewDate) return true;
+    return it.nextReviewDate <= todayIso;
+  }).length;
+
+  const carelessCount = items.filter((it) =>
+    it.whyCodes?.some((c) => String(c).startsWith('A'))
+  ).length;
+  const carelessTaxPercent =
+    totalLogs > 0 ? Math.round((carelessCount / totalLogs) * 100) : 0;
+
+  const whyCounts = new Map<string, number>();
+  let totalWhy = 0;
+  items.forEach((it) => {
+    (it.whyCodes || []).forEach((code) => {
+      whyCounts.set(code, (whyCounts.get(code) || 0) + 1);
+      totalWhy++;
+    });
+  });
+
+  const paretoWhyDistribution = Array.from(whyCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([code, count]) => {
+      const def = WHY_DICTIONARY.find((w) => w.code === code);
+      const percent = totalWhy > 0 ? Math.round((count / totalWhy) * 100) : 0;
+      return {
+        code,
+        whyCode: code,
+        title: def ? def.title : code,
+        label: def ? def.title : code,
+        group: String(code).charAt(0) as 'A' | 'B' | 'C',
+        count,
+        percent,
+        percentage: percent,
+        cumulativePercent: percent,
+        cumulativePercentage: percent,
+        isTop80: true,
+        isVitalFew: true,
+        inPareto80: true,
+      };
+    });
+
+  const breakpointFunnel = PROCESS_BREAKPOINTS.map((bp) => {
+    const count = items.filter((it) => it.processBreakpoint === bp.id).length;
+    const percent = totalLogs > 0 ? Math.round((count / totalLogs) * 100) : 0;
+    return {
+      id: bp.id,
+      breakpoint: bp.id,
+      breakpointId: bp.id,
+      title: bp.title,
+      label: bp.title,
+      count,
+      percent,
+      percentage: percent,
+    };
+  });
+
+  const subjectCarelessBreakdown = INITIAL_SUBJECTS.map((sub) => {
+    const subList = items.filter((it) => it.subjectId === sub.id);
+    const subTotal = subList.length;
+    const subCareless = subList.filter((it) =>
+      it.whyCodes?.some((c) => String(c).startsWith('A'))
+    ).length;
+    const carelessPercent =
+      subTotal > 0 ? Math.round((subCareless / subTotal) * 100) : 0;
+    return {
+      subjectId: sub.id,
+      subjectName: sub.name,
+      total: subTotal,
+      totalLogs: subTotal,
+      count: subTotal,
+      carelessCount: subCareless,
+      knowledgeCount: subTotal - subCareless,
+      deepCount: subTotal - subCareless,
+      carelessPercent,
+      carelessTaxPercent: carelessPercent,
+      knowledgePercent: subTotal > 0 ? 100 - carelessPercent : 0,
+      deepPercent: subTotal > 0 ? 100 - carelessPercent : 0,
+    };
   });
 
   return {
     totalLogs,
     resolvedCount,
-    dueTodayCount: logs.filter(l => new Date(l.nextReviewDate) <= new Date()).length,
+    dueTodayCount,
     carelessTaxPercent,
-    subjectCarelessBreakdown: [], // Có thể bổ sung logic map theo môn học sau
-    paretoWhyDistribution: [],    // Có thể bổ sung logic đếm nhóm WHY sau
-    breakpointFunnel: funnels.map(f => ({
-      stage: f.id,
-      count: f.count,
-      percentage: totalLogs === 0 ? 0 : Math.round((f.count / totalLogs) * 100)
-    }))
+    subjectCarelessBreakdown: subjectCarelessBreakdown as any,
+    paretoWhyDistribution: paretoWhyDistribution as any,
+    breakpointFunnel: breakpointFunnel as any,
   };
 }
 
 export async function GET() {
-  try {
-    const { data: logs, error } = await supabase
-      .from('error_logs')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
-
-    const analytics = calculateAnalytics(logs || []);
-    return NextResponse.json({ ok: true, logs: logs || [], analytics });
-  } catch (error: any) {
-    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
-  }
+  const logs = await fetchLogsFromCloud();
+  const analytics = computeAnalytics(logs);
+  return NextResponse.json({ ok: true, logs, analytics });
 }
 
-export async function POST(req: Request) {
+export async function PATCH(request: Request) {
   try {
-    const body = await req.json();
-    
-    // Đảm bảo parse các mảng/object thành JSON để lưu vào Supabase đúng kiểu định dạng
-    const payload = {
-      ...body,
-      whyCodes: body.whyCodes || [],
-      twinQuestions: body.twinQuestions || [],
-      references: body.references || [],
-    };
+    const body = await request.json();
+    const logs = await fetchLogsFromCloud();
 
-    const { data, error } = await supabase
-      .from('error_logs')
-      .insert([payload])
-      .select()
-      .single();
+    let targetItem: ErrorLogItem | null = null;
 
-    if (error) throw error;
-
-    // Lấy lại danh sách mới nhất để update analytics
-    const { data: allLogs } = await supabase.from('error_logs').select('*');
-    const analytics = calculateAnalytics(allLogs || []);
-
-    return NextResponse.json({ ok: true, item: data, logs: allLogs, analytics });
-  } catch (error: any) {
-    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
-  }
-}
-
-export async function PATCH(req: Request) {
-  try {
-    const body = await req.json();
-    const { updatedItem, id, action, rememberedCorrectly } = body;
-
-    let payload = updatedItem;
-
-    // Xử lý riêng cho trường hợp Review Leitner Box
-    if (action === 'review' && id) {
-      const { data: existing } = await supabase.from('error_logs').select('*').eq('id', id).single();
-      if (existing) {
-        let newBox = existing.leitnerBox || 1;
-        if (rememberedCorrectly) newBox += 1;
-        else newBox = 1;
-        
-        // Tính ngày ôn tiếp theo (công thức đơn giản)
-        const nextDate = new Date();
-        nextDate.setDate(nextDate.getDate() + (newBox * 2));
-
-        payload = { 
-          leitnerBox: newBox, 
-          nextReviewDate: nextDate.toISOString().split('T')[0] 
+    if (body.updatedItem) {
+      targetItem = body.updatedItem;
+    } else if (body.id && body.action === 'review') {
+      const item = logs.find((l) => l.id === body.id);
+      if (item) {
+        const currentBox = item.leitnerBox || 1;
+        const nextBox = body.rememberedCorrectly ? Math.min(5, currentBox + 1) : 1;
+        targetItem = {
+          ...item,
+          leitnerBox: nextBox as any,
+          isResolved: nextBox >= 4,
+          updatedAt: new Date().toISOString(),
         };
       }
     }
 
-    const targetId = updatedItem?.id || id;
-    const { data, error } = await supabase
-      .from('error_logs')
-      .update(payload)
-      .eq('id', targetId)
-      .select()
-      .single();
+    if (targetItem) {
+      await fetch(`${SUPABASE_REST_URL}/omni_error_logs?on_conflict=id`, {
+        method: 'POST',
+        headers: getHeaders('resolution=merge-duplicates,return=minimal'),
+        body: JSON.stringify([
+          {
+            id: targetItem.id,
+            subject_id: targetItem.subjectId,
+            payload: targetItem,
+            updated_at: targetItem.updatedAt || new Date().toISOString(),
+          },
+        ]),
+      });
+    }
 
-    if (error) throw error;
-
-    const { data: allLogs } = await supabase.from('error_logs').select('*').order('created_at', { ascending: false });
-    return NextResponse.json({ ok: true, item: data, logs: allLogs, analytics: calculateAnalytics(allLogs || []) });
-  } catch (error: any) {
-    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    const updatedLogs = await fetchLogsFromCloud();
+    const analytics = computeAnalytics(updatedLogs);
+    return NextResponse.json({ ok: true, logs: updatedLogs, analytics, item: targetItem });
+  } catch (err: any) {
+    return NextResponse.json({ ok: false, error: err?.message || 'Server error' }, { status: 500 });
   }
 }
 
-export async function DELETE(req: Request) {
+export async function DELETE(request: Request) {
   try {
-    const { searchParams } = new URL(req.url);
+    const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
-    
-    if (!id) throw new Error("Missing ID");
-
-    const { error } = await supabase.from('error_logs').delete().eq('id', id);
-    if (error) throw error;
-
-    const { data: allLogs } = await supabase.from('error_logs').select('*').order('created_at', { ascending: false });
-    return NextResponse.json({ ok: true, logs: allLogs, analytics: calculateAnalytics(allLogs || []) });
-  } catch (error: any) {
-    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    if (id) {
+      await fetch(`${SUPABASE_REST_URL}/omni_error_logs?id=eq.${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: getHeaders('return=minimal'),
+      });
+    }
+    const updatedLogs = await fetchLogsFromCloud();
+    const analytics = computeAnalytics(updatedLogs);
+    return NextResponse.json({ ok: true, logs: updatedLogs, analytics });
+  } catch (err: any) {
+    return NextResponse.json({ ok: false, error: err?.message || 'Server error' }, { status: 500 });
   }
 }
