@@ -734,6 +734,10 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
   const safeWhyCodes = Array.isArray(item.whyCodes) ? item.whyCodes : [];
   const safeReferences = Array.isArray(item.references) ? item.references : [];
 
+  const subDef = INITIAL_SUBJECTS.find((s) => s.id === item.subjectId);
+  const subjectBadgeClass =
+    subDef?.badgeBg || 'bg-botanical-sage text-white';
+
   return (
     <article
       style={{ contentVisibility: 'auto', containIntrinsicSize: '260px' }}
@@ -742,8 +746,8 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
       {/* Dòng meta trên cùng của thẻ */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-botanical-border pb-2.5">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="rounded-md bg-botanical-sage px-2.5 py-0.5 font-mono text-xs font-bold text-white">
-            {item.subjectName}
+          <span className={`rounded-md px-2.5 py-0.5 font-mono text-xs font-bold ${subjectBadgeClass}`}>
+            {subDef?.name || item.subjectName}
           </span>
           <span className="rounded-md bg-botanical-chipBg px-2.5 py-0.5 text-xs font-semibold text-botanical-chipText">
             {item.topic}
