@@ -1,0 +1,89 @@
+/* File: src/app/globals.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import 'katex/dist/katex.min.css';
+
+:root {
+  --bg-canvas: #F4F6F0;
+  --bg-surface: #FAFBF8;
+  --bg-moss-mist: #E6ECE2;
+  --border-stone: #D0DBD0;
+  --border-hover: #8FA998;
+  --brand-sage: #2C4C3E;
+  --accent-eucalyptus: #52796F;
+  --chip-active-bg: #D8E6DF;
+  --chip-active-text: #1B3B2B;
+  --text-ink: #1C2822;
+  --text-muted: #5A6B60;
+  --semantic-terracotta: #C85A3B;
+  --semantic-terracotta-bg: #F9EBE7;
+  --semantic-ochre: #D48C2A;
+  --semantic-ochre-bg: #FDF4E7;
+  --semantic-matcha: #3B7A57;
+  --semantic-matcha-bg: #E5F2EA;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background-color: var(--bg-canvas);
+  color: var(--text-ink);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  selection-background-color: #D8E6DF;
+  selection-color: #1B3B2B;
+}
+
+::selection {
+  background-color: #D8E6DF;
+  color: #1B3B2B;
+}
+
+/* Thanh cuộn tinh tế chuẩn Botanical Paper Studio */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: #F4F6F0;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #C2CFC2;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #8FA998;
+}
+
+/* Hiệu ứng vân giấy nhám nhẹ cho vùng làm việc */
+.botanical-paper-card {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-stone);
+  box-shadow: 0 2px 6px -1px rgba(28, 40, 34, 0.04);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.botanical-paper-card:hover {
+  border-color: var(--border-hover);
+}
+
+/* Tối ưu hiển thị công thức KaTeX */
+.katex {
+  font-size: 1.04em;
+  color: #1C2822;
+}
+
+.katex-display {
+  margin: 0.65em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.25rem 0;
+}
