@@ -1,4 +1,3 @@
-// File: src/app/api/logs/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getAllErrorLogs,
@@ -9,22 +8,17 @@ import {
   getTodayDateString,
 } from '@/lib/db';
 import { ErrorLogItem } from '@/types/error-log';
-import { LEITNER_INTERVAL_DAYS } from '@/constants/taxonomy';
 
-export async function GET() {
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
+export async function GET(req: NextRequest) {
   try {
-    const logs = getAllErrorLogs();
+    const logs = await getAllErrorLogs(req.headers);
     const analytics = computeDashboardAnalytics(logs);
-    return NextResponse.json({
-      ok: true,
-      logs,
-      analytics,
-    });
+    return NextResponse.json({ ok: true, logs, analytics });
   } catch (error) {
-    return NextResponse.json(
-      { ok: false, error: (error as Error).message },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: (error as Error).message }, { status: 500 });
   }
 }
 
@@ -33,11 +27,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const now = new Date().toISOString();
     const today = getTodayDateString();
-
     const leitnerBox = (body.leitnerBox || 1) as 1 | 2 | 3 | 4 | 5;
-    const interval = LEITNER_INTERVAL_DAYS[leitnerBox] || 1;
-    const nextDate = new Date();
-    nextDate.setDate(nextDate.getDate() + interval);
 
     const newItem: ErrorLogItem = {
       id: body.id || `err-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -62,10 +52,7 @@ export async function POST(req: NextRequest) {
       ifTrigger: body.ifTrigger || '',
       thenAction: body.thenAction || '',
       howActions: Array.isArray(body.howActions) ? body.howActions : ['H1'],
-      inPreExamChecklist: Boolean(
-        body.inPreExamChecklist ||
-          (Array.isArray(body.howActions) && body.howActions.includes('H4'))
-      ),
+      inPreExamChecklist: Boolean(body.inPreExamChecklist || (Array.isArray(body.howActions) && body.howActions.includes('H4'))),
       aiAutopsy: body.aiAutopsy || undefined,
       twinQuestions: Array.isArray(body.twinQuestions) ? body.twinQuestions : [],
       leitnerBox,
@@ -74,21 +61,13 @@ export async function POST(req: NextRequest) {
       isResolved: Boolean(body.isResolved),
     };
 
-    const saved = upsertErrorLog(newItem);
-    const logs = getAllErrorLogs();
+    const saved = await upsertErrorLog(newItem, req.headers);
+    const logs = await getAllErrorLogs(req.headers);
     const analytics = computeDashboardAnalytics(logs);
 
-    return NextResponse.json({
-      ok: true,
-      item: saved,
-      logs,
-      analytics,
-    });
+    return NextResponse.json({ ok: true, item: saved, logs, analytics });
   } catch (error) {
-    return NextResponse.json(
-      { ok: false, error: (error as Error).message },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: (error as Error).message }, { status: 500 });
   }
 }
 
@@ -98,31 +77,22 @@ export async function PATCH(req: NextRequest) {
     const { id, action, rememberedCorrectly, updatedItem } = body;
 
     if (action === 'review' && id) {
-      const item = updateLeitnerReview(id, Boolean(rememberedCorrectly));
-      const logs = getAllErrorLogs();
+      const item = await updateLeitnerReview(id, Boolean(rememberedCorrectly), req.headers);
+      const logs = await getAllErrorLogs(req.headers);
       const analytics = computeDashboardAnalytics(logs);
       return NextResponse.json({ ok: true, item, logs, analytics });
     }
 
     if (updatedItem && updatedItem.id) {
-      const saved = upsertErrorLog({
-        ...updatedItem,
-        updatedAt: new Date().toISOString(),
-      });
-      const logs = getAllErrorLogs();
+      const saved = await upsertErrorLog({ ...updatedItem, updatedAt: new Date().toISOString() }, req.headers);
+      const logs = await getAllErrorLogs(req.headers);
       const analytics = computeDashboardAnalytics(logs);
       return NextResponse.json({ ok: true, item: saved, logs, analytics });
     }
 
-    return NextResponse.json(
-      { ok: false, error: 'Thiếu tham số cập nhật hợp lệ' },
-      { status: 400 }
-    );
+    return NextResponse.json({ ok: false, error: 'Thiếu tham số' }, { status: 400 });
   } catch (error) {
-    return NextResponse.json(
-      { ok: false, error: (error as Error).message },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: (error as Error).message }, { status: 500 });
   }
 }
 
@@ -130,17 +100,12 @@ export async function DELETE(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get('id');
-    if (!id) {
-      return NextResponse.json({ ok: false, error: 'Thiếu ID bản ghi' }, { status: 400 });
-    }
-    deleteErrorLog(id);
-    const logs = getAllErrorLogs();
+    if (!id) return NextResponse.json({ ok: false, error: 'Thiếu ID' }, { status: 400 });
+    await deleteErrorLog(id, req.headers);
+    const logs = await getAllErrorLogs(req.headers);
     const analytics = computeDashboardAnalytics(logs);
     return NextResponse.json({ ok: true, logs, analytics });
   } catch (error) {
-    return NextResponse.json(
-      { ok: false, error: (error as Error).message },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: (error as Error).message }, { status: 500 });
   }
 }
