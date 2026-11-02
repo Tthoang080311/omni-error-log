@@ -1,111 +1,150 @@
-import { NextRequest, NextResponse } from 'next/server';
-import {
-  getAllErrorLogs,
-  upsertErrorLog,
-  deleteErrorLog,
-  updateLeitnerReview,
-  computeDashboardAnalytics,
-  getTodayDateString,
-} from '@/lib/db';
-import { ErrorLogItem } from '@/types/error-log';
+// File: src/app/api/logs/route.ts
+import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
+// Khởi tạo Supabase Client
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseKey);
 
-export async function GET(req: NextRequest) {
+// Hàm tính toán Analytics trả về cho Frontend
+function calculateAnalytics(logs: any[]) {
+  const totalLogs = logs.length;
+  const resolvedCount = logs.filter(l => l.leitnerBox > 5).length; // Giả định box > 5 là đã master
+  
+  // Tính Thuế Ẩu (Careless Tax)
+  const carelessLogs = logs.filter(l => l.whyCodes?.includes('CARELESS') || l.whyCodes?.includes('W01'));
+  const carelessTaxPercent = totalLogs === 0 ? 0 : Math.round((carelessLogs.length / totalLogs) * 100);
+
+  // Phễu điểm gãy (Process Breakpoint Funnel)
+  const funnels = [
+    { id: 'DECODE', count: 0 },
+    { id: 'PLAN', count: 0 },
+    { id: 'EXECUTE', count: 0 },
+    { id: 'VERIFY', count: 0 }
+  ];
+  logs.forEach(l => {
+    const stage = funnels.find(f => f.id === l.processBreakpoint);
+    if (stage) stage.count++;
+  });
+
+  return {
+    totalLogs,
+    resolvedCount,
+    dueTodayCount: logs.filter(l => new Date(l.nextReviewDate) <= new Date()).length,
+    carelessTaxPercent,
+    subjectCarelessBreakdown: [], // Có thể bổ sung logic map theo môn học sau
+    paretoWhyDistribution: [],    // Có thể bổ sung logic đếm nhóm WHY sau
+    breakpointFunnel: funnels.map(f => ({
+      stage: f.id,
+      count: f.count,
+      percentage: totalLogs === 0 ? 0 : Math.round((f.count / totalLogs) * 100)
+    }))
+  };
+}
+
+export async function GET() {
   try {
-    const logs = await getAllErrorLogs(req.headers);
-    const analytics = computeDashboardAnalytics(logs);
-    return NextResponse.json({ ok: true, logs, analytics });
-  } catch (error) {
-    return NextResponse.json({ ok: false, error: (error as Error).message }, { status: 500 });
+    const { data: logs, error } = await supabase
+      .from('error_logs')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    const analytics = calculateAnalytics(logs || []);
+    return NextResponse.json({ ok: true, logs: logs || [], analytics });
+  } catch (error: any) {
+    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
   }
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const now = new Date().toISOString();
-    const today = getTodayDateString();
-    const leitnerBox = (body.leitnerBox || 1) as 1 | 2 | 3 | 4 | 5;
-
-    const newItem: ErrorLogItem = {
-      id: body.id || `err-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      createdAt: body.createdAt || now,
-      updatedAt: now,
-      subjectId: body.subjectId || 'math-thpt',
-      subjectName: body.subjectName || 'Toán THPT',
-      subjectGroup: body.subjectGroup || 'STEM',
-      topic: body.topic || 'Chuyên đề chung',
-      questionFormat: body.questionFormat || 'MCQ_4',
-      processBreakpoint: body.processBreakpoint || 'STAGE_1_DECODE',
-      difficulty: body.difficulty || 3,
-      timePressure: body.timePressure || 'EXAM_PACE',
-      questionText: body.questionText || '',
-      myWrongStep: body.myWrongStep || '',
-      correctSolution: body.correctSolution || '',
-      problemImageUrl: body.problemImageUrl || undefined,
-      solutionImageUrl: body.solutionImageUrl || undefined,
-      references: Array.isArray(body.references) ? body.references : [],
-      whyCodes: Array.isArray(body.whyCodes) ? body.whyCodes : ['A1'],
-      whyCustomNotes: body.whyCustomNotes || '',
-      ifTrigger: body.ifTrigger || '',
-      thenAction: body.thenAction || '',
-      howActions: Array.isArray(body.howActions) ? body.howActions : ['H1'],
-      inPreExamChecklist: Boolean(body.inPreExamChecklist || (Array.isArray(body.howActions) && body.howActions.includes('H4'))),
-      aiAutopsy: body.aiAutopsy || undefined,
-      twinQuestions: Array.isArray(body.twinQuestions) ? body.twinQuestions : [],
-      leitnerBox,
-      nextReviewDate: body.nextReviewDate || today,
-      reviewCount: body.reviewCount ?? 0,
-      isResolved: Boolean(body.isResolved),
+    
+    // Đảm bảo parse các mảng/object thành JSON để lưu vào Supabase đúng kiểu định dạng
+    const payload = {
+      ...body,
+      whyCodes: body.whyCodes || [],
+      twinQuestions: body.twinQuestions || [],
+      references: body.references || [],
     };
 
-    const saved = await upsertErrorLog(newItem, req.headers);
-    const logs = await getAllErrorLogs(req.headers);
-    const analytics = computeDashboardAnalytics(logs);
+    const { data, error } = await supabase
+      .from('error_logs')
+      .insert([payload])
+      .select()
+      .single();
 
-    return NextResponse.json({ ok: true, item: saved, logs, analytics });
-  } catch (error) {
-    return NextResponse.json({ ok: false, error: (error as Error).message }, { status: 500 });
+    if (error) throw error;
+
+    // Lấy lại danh sách mới nhất để update analytics
+    const { data: allLogs } = await supabase.from('error_logs').select('*');
+    const analytics = calculateAnalytics(allLogs || []);
+
+    return NextResponse.json({ ok: true, item: data, logs: allLogs, analytics });
+  } catch (error: any) {
+    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
   }
 }
 
-export async function PATCH(req: NextRequest) {
+export async function PATCH(req: Request) {
   try {
     const body = await req.json();
-    const { id, action, rememberedCorrectly, updatedItem } = body;
+    const { updatedItem, id, action, rememberedCorrectly } = body;
 
+    let payload = updatedItem;
+
+    // Xử lý riêng cho trường hợp Review Leitner Box
     if (action === 'review' && id) {
-      const item = await updateLeitnerReview(id, Boolean(rememberedCorrectly), req.headers);
-      const logs = await getAllErrorLogs(req.headers);
-      const analytics = computeDashboardAnalytics(logs);
-      return NextResponse.json({ ok: true, item, logs, analytics });
+      const { data: existing } = await supabase.from('error_logs').select('*').eq('id', id).single();
+      if (existing) {
+        let newBox = existing.leitnerBox || 1;
+        if (rememberedCorrectly) newBox += 1;
+        else newBox = 1;
+        
+        // Tính ngày ôn tiếp theo (công thức đơn giản)
+        const nextDate = new Date();
+        nextDate.setDate(nextDate.getDate() + (newBox * 2));
+
+        payload = { 
+          leitnerBox: newBox, 
+          nextReviewDate: nextDate.toISOString().split('T')[0] 
+        };
+      }
     }
 
-    if (updatedItem && updatedItem.id) {
-      const saved = await upsertErrorLog({ ...updatedItem, updatedAt: new Date().toISOString() }, req.headers);
-      const logs = await getAllErrorLogs(req.headers);
-      const analytics = computeDashboardAnalytics(logs);
-      return NextResponse.json({ ok: true, item: saved, logs, analytics });
-    }
+    const targetId = updatedItem?.id || id;
+    const { data, error } = await supabase
+      .from('error_logs')
+      .update(payload)
+      .eq('id', targetId)
+      .select()
+      .single();
 
-    return NextResponse.json({ ok: false, error: 'Thiếu tham số' }, { status: 400 });
-  } catch (error) {
-    return NextResponse.json({ ok: false, error: (error as Error).message }, { status: 500 });
+    if (error) throw error;
+
+    const { data: allLogs } = await supabase.from('error_logs').select('*').order('created_at', { ascending: false });
+    return NextResponse.json({ ok: true, item: data, logs: allLogs, analytics: calculateAnalytics(allLogs || []) });
+  } catch (error: any) {
+    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
   }
 }
 
-export async function DELETE(req: NextRequest) {
+export async function DELETE(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get('id');
-    if (!id) return NextResponse.json({ ok: false, error: 'Thiếu ID' }, { status: 400 });
-    await deleteErrorLog(id, req.headers);
-    const logs = await getAllErrorLogs(req.headers);
-    const analytics = computeDashboardAnalytics(logs);
-    return NextResponse.json({ ok: true, logs, analytics });
-  } catch (error) {
-    return NextResponse.json({ ok: false, error: (error as Error).message }, { status: 500 });
+    
+    if (!id) throw new Error("Missing ID");
+
+    const { error } = await supabase.from('error_logs').delete().eq('id', id);
+    if (error) throw error;
+
+    const { data: allLogs } = await supabase.from('error_logs').select('*').order('created_at', { ascending: false });
+    return NextResponse.json({ ok: true, logs: allLogs, analytics: calculateAnalytics(allLogs || []) });
+  } catch (error: any) {
+    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
   }
 }
