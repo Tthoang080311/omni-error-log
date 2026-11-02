@@ -58,7 +58,12 @@ import {
 
 type ActiveWorkspaceTab = 'WORKSTATION' | 'ANALYTICS' | 'REVIEW' | 'CHECKLIST';
 type VnImeMode = 'OFF' | 'TELEX' | 'VNI';
-type LiveSyncStatus = 'LIVE_CLOUD' | 'LIVE_LOCAL' | 'SYNCING' | 'OFFLINE_QUEUE' | 'ERROR';
+type LiveSyncStatus =
+  | 'LIVE_CLOUD'
+  | 'LIVE_LOCAL'
+  | 'SYNCING'
+  | 'OFFLINE_QUEUE'
+  | 'ERROR';
 
 interface OfflineOutboxAction {
   id: string;
@@ -71,6 +76,181 @@ const SYNC_CHANNEL_NAME = 'OMNI_ERROR_LOG_LIVE_SYNC_V1';
 const LOCAL_CACHE_KEY = 'OMNI_ERROR_LOG_SNAPSHOT_V1';
 const LOCAL_OUTBOX_KEY = 'OMNI_ERROR_LOG_OUTBOX_V1';
 const LOCAL_IME_MODE_KEY = 'OMNI_VN_IME_MODE';
+
+// ============================================================================
+// 0. ENGINE TÍNH TOÁN THỐNG KÊ PARETO 80/20, THUẾ ẨU & LEITNER TRỰC TIẾP
+//    (Khắc phục triệt để lỗi SQLite rỗng trên Vercel trả về Analytics = 0)
+// ============================================================================
+function getLocalTodayDateString(): string {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function computeRealtimeAnalytics(
+  items: ErrorLogItem[],
+  serverAnalytics?: DashboardAnalytics
+): DashboardAnalytics {
+  // Nếu server SQLite đã tính sẵn và khớp chính xác số lượng bản ghi thì ưu tiên dùng
+  if (
+    serverAnalytics &&
+    serverAnalytics.totalLogs === items.length &&
+    items.length > 0 &&
+    serverAnalytics.paretoWhyDistribution?.length > 0
+  ) {
+    return serverAnalytics;
+  }
+
+  const totalLogs = items.length;
+  const todayLocal = getLocalTodayDateString();
+  const todayIso = new Date().toISOString().slice(0, 10);
+
+  const resolvedCount = items.filter((it) => (it.leitnerBox ?? 1) >= 4).length;
+
+  const dueTodayCount = items.filter((it) => {
+    if ((it.leitnerBox ?? 1) >= 5 && it.isResolved) return false;
+    if (!it.nextReviewDate) return true;
+    return it.nextReviewDate <= todayLocal || it.nextReviewDate <= todayIso;
+  }).length;
+
+  // 1. Tính Thuế Ẩu (Tỷ lệ bản ghi dính ít nhất 1 mã lỗi Nhóm A)
+  const carelessItemsCount = items.filter((it) =>
+    it.whyCodes?.some((code) => String(code).startsWith('A'))
+  ).length;
+  const carelessTaxPercent =
+    totalLogs > 0 ? Math.round((carelessItemsCount / totalLogs) * 100) : 0;
+
+  // 2. Tính Phân phối Pareto 80/20 theo Mã lỗi WHY
+  const whyCounts = new Map<string, number>();
+  let totalWhyOccurrences = 0;
+
+  items.forEach((it) => {
+    (it.whyCodes || []).forEach((code) => {
+      whyCounts.set(code, (whyCounts.get(code) || 0) + 1);
+      totalWhyOccurrences += 1;
+    });
+  });
+
+  const sortedWhyEntries = Array.from(whyCounts.entries()).sort(
+    (a, b) => b[1] - a[1]
+  );
+
+  let runningCount = 0;
+  const paretoWhyDistribution = sortedWhyEntries.map(([code, count]) => {
+    const def = WHY_DICTIONARY.find((w) => w.code === code);
+    const prevCumulativePercent =
+      totalWhyOccurrences > 0
+        ? Math.round((runningCount / totalWhyOccurrences) * 100)
+        : 0;
+    runningCount += count;
+    const percent =
+      totalWhyOccurrences > 0
+        ? Math.round((count / totalWhyOccurrences) * 100)
+        : 0;
+    const cumulativePercent =
+      totalWhyOccurrences > 0
+        ? Math.min(100, Math.round((runningCount / totalWhyOccurrences) * 100))
+        : 0;
+    const isTop80 = prevCumulativePercent < 80;
+    const group = String(code).charAt(0) as 'A' | 'B' | 'C';
+
+    return {
+      code,
+      whyCode: code,
+      title: def ? def.title : code,
+      label: def ? def.title : code,
+      group,
+      category: def?.category || group,
+      count,
+      percent,
+      percentage: percent,
+      cumulativePercent,
+      cumulativePercentage: cumulativePercent,
+      isTop80,
+      isVitalFew: isTop80,
+      inPareto80: isTop80,
+    };
+  });
+
+  // 3. Tính Phễu Điểm Gãy Quy Trình Tư Duy (Giai đoạn 1 -> 4)
+  const breakpointFunnel = PROCESS_BREAKPOINTS.map((bp) => {
+    const count = items.filter((it) => it.processBreakpoint === bp.id).length;
+    const percent = totalLogs > 0 ? Math.round((count / totalLogs) * 100) : 0;
+    return {
+      id: bp.id,
+      breakpoint: bp.id,
+      breakpointId: bp.id,
+      title: bp.title,
+      label: bp.title,
+      count,
+      percent,
+      percentage: percent,
+    };
+  });
+
+  // 4. Tính Tỷ trọng "Thuế Ẩu" vs "Hổng Kiến Thức" theo từng Môn học
+  const subjectMap = new Map<
+    string,
+    { subjectId: string; subjectName: string; list: ErrorLogItem[] }
+  >();
+
+  items.forEach((it) => {
+    const existing = subjectMap.get(it.subjectId);
+    if (existing) {
+      existing.list.push(it);
+    } else {
+      const subDef = INITIAL_SUBJECTS.find((s) => s.id === it.subjectId);
+      subjectMap.set(it.subjectId, {
+        subjectId: it.subjectId,
+        subjectName: it.subjectName || subDef?.name || it.subjectId,
+        list: [it],
+      });
+    }
+  });
+
+  const subjectCarelessBreakdown = Array.from(subjectMap.values()).map(
+    ({ subjectId, subjectName, list }) => {
+      const subTotal = list.length;
+      const carelessCount = list.filter((it) =>
+        it.whyCodes?.some((c) => String(c).startsWith('A'))
+      ).length;
+      const knowledgeCount = subTotal - carelessCount;
+      const carelessPercent =
+        subTotal > 0 ? Math.round((carelessCount / subTotal) * 100) : 0;
+      const knowledgePercent = subTotal > 0 ? 100 - carelessPercent : 0;
+
+      return {
+        subjectId,
+        subjectName,
+        total: subTotal,
+        totalLogs: subTotal,
+        count: subTotal,
+        carelessCount,
+        knowledgeCount,
+        deepCount: knowledgeCount,
+        carelessPercent,
+        carelessTaxPercent: carelessPercent,
+        knowledgePercent,
+        deepPercent: knowledgePercent,
+      };
+    }
+  );
+
+  return {
+    totalLogs,
+    resolvedCount,
+    dueTodayCount,
+    carelessTaxPercent,
+    subjectCarelessBreakdown:
+      subjectCarelessBreakdown as unknown as DashboardAnalytics['subjectCarelessBreakdown'],
+    paretoWhyDistribution:
+      paretoWhyDistribution as unknown as DashboardAnalytics['paretoWhyDistribution'],
+    breakpointFunnel:
+      breakpointFunnel as unknown as DashboardAnalytics['breakpointFunnel'],
+  };
+}
 
 // ============================================================================
 // 1. ENGINE BỘ GÕ TIẾNG VIỆT DỰ PHÒNG (TELEX / VNI) — O(1) ZERO-RENDER
@@ -169,7 +349,10 @@ function transformVietnameseWord(
   const lowerKey = keyTyped.toLowerCase();
   const chars = Array.from(rawWord);
 
-  if ((mode === 'TELEX' && lowerKey === 'd') || (mode === 'VNI' && lowerKey === '9')) {
+  if (
+    (mode === 'TELEX' && lowerKey === 'd') ||
+    (mode === 'VNI' && lowerKey === '9')
+  ) {
     const firstChar = chars[0];
     if (firstChar === 'd' || firstChar === 'D') {
       chars[0] = firstChar === 'D' ? 'Đ' : 'đ';
@@ -424,6 +607,7 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
       style={{ contentVisibility: 'auto', containIntrinsicSize: '260px' }}
       className="botanical-paper-card rounded-xl p-5"
     >
+      {/* Dòng мета trên cùng của thẻ */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-botanical-border pb-2.5">
         <div className="flex flex-wrap items-center gap-2">
           <span className="rounded-md bg-botanical-sage px-2.5 py-0.5 font-mono text-xs font-bold text-white">
@@ -470,7 +654,9 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
         </div>
       </div>
 
+      {/* Nội dung 3 cột thu gọn: WHAT - WHY - HOW */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+        {/* Cột 1: Đề bài, Bước sai, Lời giải & Ảnh */}
         <div className="space-y-2.5 text-xs lg:col-span-5">
           <div className="rounded-lg border border-botanical-border bg-botanical-canvas p-3">
             <span className="mb-1 block font-mono text-[10px] font-bold uppercase text-botanical-muted">
@@ -489,6 +675,7 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
           )}
         </div>
 
+        {/* Cột 2: Bước sai vs Lời giải chuẩn + Mã WHY */}
         <div className="space-y-2.5 text-xs lg:col-span-4">
           <div className="rounded-lg border border-botanical-terracotta/40 bg-botanical-terracottaBg/40 p-2.5">
             <span className="font-bold text-botanical-terracotta">
@@ -519,6 +706,7 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
           </div>
         </div>
 
+        {/* Cột 3: Phản xạ NẾU - THÌ & Link định vị YouTube */}
         <div className="flex flex-col justify-between space-y-2.5 rounded-lg border border-botanical-sage/30 bg-botanical-mossMist/40 p-3 text-xs lg:col-span-3">
           <div className="space-y-2">
             <span className="inline-block rounded bg-botanical-sage px-2 py-0.5 font-mono text-[10px] font-bold uppercase text-white">
@@ -534,6 +722,7 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
             </div>
           </div>
 
+          {/* Nguồn tham chiếu YouTube ?t= / Sách */}
           {item.references.length > 0 && (
             <div className="space-y-1 border-t border-botanical-border pt-2">
               {item.references.map((ref) => (
@@ -574,23 +763,19 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
 // ============================================================================
 export default function OmniErrorLogAppPage() {
   const [logs, setLogs] = useState<ErrorLogItem[]>([]);
-  const [analytics, setAnalytics] = useState<DashboardAnalytics>({
-    totalLogs: 0,
-    resolvedCount: 0,
-    dueTodayCount: 0,
-    carelessTaxPercent: 0,
-    subjectCarelessBreakdown: [],
-    paretoWhyDistribution: [],
-    breakpointFunnel: [],
-  });
+  const [analytics, setAnalytics] = useState<DashboardAnalytics>(() =>
+    computeRealtimeAnalytics([])
+  );
   const [isLoading, setIsLoading] = useState(true);
 
+  // Điều hướng Tab & Modal
   const [activeTab, setActiveTab] = useState<ActiveWorkspaceTab>('WORKSTATION');
   const [isCmdKOpen, setIsCmdKOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<ErrorLogItem | null>(null);
   const [forensicModalItem, setForensicModalItem] =
     useState<ErrorLogItem | null>(null);
 
+  // Bộ lọc danh sách bản ghi
   const [subjectFilter, setSubjectFilter] = useState<string>('ALL');
   const [whyFilter, setWhyFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -599,6 +784,7 @@ export default function OmniErrorLogAppPage() {
   const deferredSubjectFilter = useDeferredValue(subjectFilter);
   const deferredWhyFilter = useDeferredValue(whyFilter);
 
+  // Cấu hình nhanh Gemini API Key trên giao diện
   const [customApiKey, setCustomApiKey] = useState<string>('');
   const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false);
 
@@ -621,30 +807,42 @@ export default function OmniErrorLogAppPage() {
     HTMLInputElement | HTMLTextAreaElement | null
   >(null);
 
-  const broadcastSyncState = useCallback(
-    (nextLogs: ErrorLogItem[], nextAnalytics: DashboardAnalytics) => {
-      const signature = `${nextLogs.length}_${nextLogs[0]?.updatedAt || ''}_${nextAnalytics.resolvedCount}_${nextAnalytics.dueTodayCount}`;
+  // Hàm đồng bộ nhất quán cả danh sách `logs` lẫn `analytics` trên toàn ứng dụng
+  const applyLogsAndAnalytics = useCallback(
+    (
+      nextLogs: ErrorLogItem[],
+      serverAnalytics?: DashboardAnalytics,
+      shouldBroadcast = true
+    ) => {
+      const computedAnalytics = computeRealtimeAnalytics(
+        nextLogs,
+        serverAnalytics
+      );
+      const signature = `${nextLogs.length}_${nextLogs[0]?.updatedAt || ''}_${computedAnalytics.resolvedCount}_${computedAnalytics.dueTodayCount}_${computedAnalytics.carelessTaxPercent}`;
       lastPayloadSignatureRef.current = signature;
+
+      setLogs(nextLogs);
+      setAnalytics(computedAnalytics);
 
       try {
         window.localStorage.setItem(
           LOCAL_CACHE_KEY,
           JSON.stringify({
             logs: nextLogs,
-            analytics: nextAnalytics,
+            analytics: computedAnalytics,
             updatedAt: new Date().toISOString(),
           })
         );
       } catch {
-        // Bỏ qua nếu bộ nhớ đầy
+        // Bỏ qua nếu bộ nhớ trình duyệt đầy
       }
 
-      if (broadcastChannelRef.current) {
+      if (shouldBroadcast && broadcastChannelRef.current) {
         broadcastChannelRef.current.postMessage({
           type: 'STATE_SYNC',
           signature,
           logs: nextLogs,
-          analytics: nextAnalytics,
+          analytics: computedAnalytics,
           timestamp: Date.now(),
         });
       }
@@ -675,26 +873,28 @@ export default function OmniErrorLogAppPage() {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(action.payload),
-            });
-            if (action.payload.updatedItem) {
-              await upsertLogsToSupabase(action.payload.updatedItem as ErrorLogItem);
-            }
-            if (!res.ok) remaining.push(action);
+            }).catch(() => null);
+            const cloudOk = action.payload.updatedItem
+              ? await upsertLogsToSupabase(
+                  action.payload.updatedItem as ErrorLogItem
+                )
+              : false;
+            if (!res?.ok && !cloudOk) remaining.push(action);
           } else if (action.type === 'REVIEW_GRADE') {
             const res = await fetch('/api/logs', {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(action.payload),
-            });
-            if (!res.ok) remaining.push(action);
+            }).catch(() => null);
+            if (!res?.ok) remaining.push(action);
           } else if (action.type === 'DELETE_ITEM') {
             const id = String(action.payload.id || '');
             const res = await fetch(
               `/api/logs?id=${encodeURIComponent(id)}`,
               { method: 'DELETE' }
-            );
-            await deleteLogFromSupabase(id);
-            if (!res.ok) remaining.push(action);
+            ).catch(() => null);
+            const cloudOk = await deleteLogFromSupabase(id);
+            if (!res?.ok && !cloudOk) remaining.push(action);
           }
         } catch {
           remaining.push(action);
@@ -752,15 +952,21 @@ export default function OmniErrorLogAppPage() {
       try {
         await flushOfflineOutbox();
         const [localRes, cloudLogs] = await Promise.all([
-          fetch('/api/logs', { cache: 'no-store' }).then((r) => r.json()),
+          fetch('/api/logs', { cache: 'no-store' })
+            .then((r) => r.json())
+            .catch(() => ({ ok: false, logs: [] })),
           fetchAllLogsFromSupabase(),
         ]);
 
-        if (localRes.ok) {
-          let mergedLogs: ErrorLogItem[] = localRes.logs || [];
-          const incomingAnalytics: DashboardAnalytics = localRes.analytics;
+        const localLogs: ErrorLogItem[] =
+          localRes && localRes.ok && Array.isArray(localRes.logs)
+            ? localRes.logs
+            : [];
 
-          // Hợp nhất thông minh 2 chiều giữa SQLite nội bộ và Supabase Cloud
+        if (localRes?.ok || cloudLogs !== null) {
+          let mergedLogs: ErrorLogItem[] = [...localLogs];
+
+          // Hợp nhất 2 chiều giữa SQLite nội bộ và Supabase Cloud
           if (cloudLogs !== null) {
             const byId = new Map<string, ErrorLogItem>();
             mergedLogs.forEach((item) => byId.set(item.id, item));
@@ -773,7 +979,7 @@ export default function OmniErrorLogAppPage() {
               const existingLocal = byId.get(cItem.id);
               if (
                 !existingLocal ||
-                new Date(cItem.updatedAt || 0).getTime() >
+                new Date(cItem.updatedAt || 0).getTime() >=
                   new Date(existingLocal.updatedAt || 0).getTime()
               ) {
                 byId.set(cItem.id, cItem);
@@ -797,12 +1003,14 @@ export default function OmniErrorLogAppPage() {
             );
           }
 
-          const nextSig = `${mergedLogs.length}_${mergedLogs[0]?.updatedAt || ''}_${incomingAnalytics.resolvedCount}_${incomingAnalytics.dueTodayCount}`;
+          const computedAnalytics = computeRealtimeAnalytics(
+            mergedLogs,
+            localRes?.analytics
+          );
+          const nextSig = `${mergedLogs.length}_${mergedLogs[0]?.updatedAt || ''}_${computedAnalytics.resolvedCount}_${computedAnalytics.dueTodayCount}_${computedAnalytics.carelessTaxPercent}`;
 
           if (!silent || nextSig !== lastPayloadSignatureRef.current) {
-            setLogs(mergedLogs);
-            setAnalytics(incomingAnalytics);
-            broadcastSyncState(mergedLogs, incomingAnalytics);
+            applyLogsAndAnalytics(mergedLogs, localRes?.analytics, true);
           }
 
           setSyncLatencyMs(Math.round(performance.now() - startPerf));
@@ -822,8 +1030,9 @@ export default function OmniErrorLogAppPage() {
           const cached = window.localStorage.getItem(LOCAL_CACHE_KEY);
           if (cached && logs.length === 0) {
             const parsed = JSON.parse(cached);
-            if (parsed.logs) setLogs(parsed.logs);
-            if (parsed.analytics) setAnalytics(parsed.analytics);
+            if (Array.isArray(parsed.logs)) {
+              applyLogsAndAnalytics(parsed.logs, parsed.analytics, false);
+            }
           }
         } catch {
           // Bỏ qua lỗi đọc cache
@@ -834,7 +1043,12 @@ export default function OmniErrorLogAppPage() {
         if (!silent) setIsLoading(false);
       }
     },
-    [broadcastSyncState, flushOfflineOutbox, logs.length, pendingOutboxCount]
+    [
+      applyLogsAndAnalytics,
+      flushOfflineOutbox,
+      logs.length,
+      pendingOutboxCount,
+    ]
   );
 
   useEffect(() => {
@@ -873,8 +1087,11 @@ export default function OmniErrorLogAppPage() {
           msg.signature !== lastPayloadSignatureRef.current
         ) {
           lastPayloadSignatureRef.current = msg.signature;
-          setLogs(msg.logs || []);
-          setAnalytics(msg.analytics);
+          const incomingLogs: ErrorLogItem[] = msg.logs || [];
+          setLogs(incomingLogs);
+          setAnalytics(
+            computeRealtimeAnalytics(incomingLogs, msg.analytics)
+          );
           setLastSyncedAt(
             new Date(msg.timestamp || Date.now()).toLocaleTimeString('vi-VN', {
               hour: '2-digit',
@@ -924,7 +1141,11 @@ export default function OmniErrorLogAppPage() {
         setIsCmdKOpen((prev) => !prev);
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'v') {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.shiftKey &&
+        e.key.toLowerCase() === 'v'
+      ) {
         e.preventDefault();
         setVnImeMode((prev) => {
           const next: VnImeMode =
@@ -1107,7 +1328,11 @@ export default function OmniErrorLogAppPage() {
 
   const handleUpdateLogItem = useCallback(
     async (updated: ErrorLogItem) => {
-      setLogs((prev) => prev.map((it) => (it.id === updated.id ? updated : it)));
+      const optimisticLogs = logs.map((it) =>
+        it.id === updated.id ? updated : it
+      );
+      applyLogsAndAnalytics(optimisticLogs);
+
       if (forensicModalItem?.id === updated.id) {
         setForensicModalItem(updated);
       }
@@ -1119,15 +1344,12 @@ export default function OmniErrorLogAppPage() {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ updatedItem: updated }),
-          }),
+          }).catch(() => null),
           upsertLogsToSupabase(updated),
         ]);
-        const data = await res.json();
-        if (data.ok) {
-          setLogs(data.logs);
-          setAnalytics(data.analytics);
-          broadcastSyncState(data.logs, data.analytics);
-          if (forensicModalItem?.id === updated.id) {
+        const data = res ? await res.json().catch(() => null) : null;
+        if (data?.ok || cloudOk) {
+          if (forensicModalItem?.id === updated.id && data?.item) {
             setForensicModalItem(data.item);
           }
           setSyncStatus(cloudOk ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
@@ -1138,38 +1360,74 @@ export default function OmniErrorLogAppPage() {
               second: '2-digit',
             })
           );
+          await fetchAllData(true);
         }
       } catch {
         enqueueOfflineAction('PATCH_ITEM', { updatedItem: updated });
       }
     },
-    [broadcastSyncState, enqueueOfflineAction, forensicModalItem?.id]
+    [
+      applyLogsAndAnalytics,
+      enqueueOfflineAction,
+      fetchAllData,
+      forensicModalItem?.id,
+      logs,
+    ]
   );
 
   const handleReviewGrade = useCallback(
     async (id: string, rememberedCorrectly: boolean) => {
+      // Tính toán hộp Leitner & ngày ôn tiếp theo ngay trên Client để đồng bộ cả lên Supabase
+      const intervals: Record<number, number> = {
+        1: 1,
+        2: 3,
+        3: 7,
+        4: 14,
+        5: 30,
+      };
+      let updatedTargetItem: ErrorLogItem | null = null;
+
+      const optimisticLogs = logs.map((it) => {
+        if (it.id !== id) return it;
+        const currentBox = it.leitnerBox || 1;
+        const nextBox = rememberedCorrectly
+          ? Math.min(5, currentBox + 1)
+          : 1;
+        const daysToAdd = intervals[nextBox] || 1;
+        const nextDate = new Date();
+        nextDate.setDate(nextDate.getDate() + daysToAdd);
+        const nextReviewDate = nextDate.toISOString().slice(0, 10);
+
+        updatedTargetItem = {
+          ...it,
+          leitnerBox: nextBox as ErrorLogItem['leitnerBox'],
+          nextReviewDate,
+          isResolved: nextBox >= 4,
+          updatedAt: new Date().toISOString(),
+        };
+        return updatedTargetItem;
+      });
+
+      applyLogsAndAnalytics(optimisticLogs);
+
       try {
         setSyncStatus('SYNCING');
-        const res = await fetch('/api/logs', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id,
-            action: 'review',
-            rememberedCorrectly,
-          }),
-        });
-        const data = await res.json();
-        if (data.ok) {
-          setLogs(data.logs);
-          setAnalytics(data.analytics);
-          broadcastSyncState(data.logs, data.analytics);
-          const reviewedItem = (data.logs as ErrorLogItem[]).find(
-            (it) => it.id === id
-          );
-          const cloudOk = reviewedItem
-            ? await upsertLogsToSupabase(reviewedItem)
-            : false;
+        const [res, cloudOk] = await Promise.all([
+          fetch('/api/logs', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id,
+              action: 'review',
+              rememberedCorrectly,
+            }),
+          }).catch(() => null),
+          updatedTargetItem
+            ? upsertLogsToSupabase(updatedTargetItem)
+            : Promise.resolve(false),
+        ]);
+        const data = res ? await res.json().catch(() => null) : null;
+        if (data?.ok || cloudOk) {
           setSyncStatus(cloudOk ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
           setLastSyncedAt(
             new Date().toLocaleTimeString('vi-VN', {
@@ -1178,6 +1436,7 @@ export default function OmniErrorLogAppPage() {
               second: '2-digit',
             })
           );
+          await fetchAllData(true);
         }
       } catch {
         enqueueOfflineAction('REVIEW_GRADE', {
@@ -1187,25 +1446,24 @@ export default function OmniErrorLogAppPage() {
         });
       }
     },
-    [broadcastSyncState, enqueueOfflineAction]
+    [applyLogsAndAnalytics, enqueueOfflineAction, fetchAllData, logs]
   );
 
   const handleDeleteLog = useCallback(
     async (id: string) => {
-      setLogs((prev) => prev.filter((item) => item.id !== id));
+      const nextLogs = logs.filter((item) => item.id !== id);
+      applyLogsAndAnalytics(nextLogs);
+
       try {
         setSyncStatus('SYNCING');
         const [res, cloudOk] = await Promise.all([
           fetch(`/api/logs?id=${encodeURIComponent(id)}`, {
             method: 'DELETE',
-          }),
+          }).catch(() => null),
           deleteLogFromSupabase(id),
         ]);
-        const data = await res.json();
-        if (data.ok) {
-          setLogs(data.logs);
-          setAnalytics(data.analytics);
-          broadcastSyncState(data.logs, data.analytics);
+        const data = res ? await res.json().catch(() => null) : null;
+        if (data?.ok || cloudOk) {
           setSyncStatus(cloudOk ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
           setLastSyncedAt(
             new Date().toLocaleTimeString('vi-VN', {
@@ -1219,7 +1477,7 @@ export default function OmniErrorLogAppPage() {
         enqueueOfflineAction('DELETE_ITEM', { id });
       }
     },
-    [broadcastSyncState, enqueueOfflineAction]
+    [applyLogsAndAnalytics, enqueueOfflineAction, logs]
   );
 
   const handleStartEditCard = useCallback((item: ErrorLogItem) => {
@@ -1321,7 +1579,8 @@ export default function OmniErrorLogAppPage() {
               >
                 {syncStatus === 'SYNCING' ? (
                   <RefreshCw className="h-3.5 w-3.5 animate-spin text-botanical-sage" />
-                ) : syncStatus === 'LIVE_CLOUD' || syncStatus === 'LIVE_LOCAL' ? (
+                ) : syncStatus === 'LIVE_CLOUD' ||
+                  syncStatus === 'LIVE_LOCAL' ? (
                   <Wifi className="h-3.5 w-3.5 text-botanical-matcha" />
                 ) : (
                   <WifiOff className="h-3.5 w-3.5 text-botanical-terracotta" />
@@ -1376,7 +1635,9 @@ export default function OmniErrorLogAppPage() {
               >
                 <Keyboard className="h-3.5 w-3.5" />
                 <span>
-                  {vnImeMode === 'OFF' ? 'Gõ Việt: TẮT' : `Gõ Việt: ${vnImeMode}`}
+                  {vnImeMode === 'OFF'
+                    ? 'Gõ Việt: TẮT'
+                    : `Gõ Việt: ${vnImeMode}`}
                 </span>
               </button>
 
@@ -1426,6 +1687,7 @@ export default function OmniErrorLogAppPage() {
           </div>
         </div>
 
+        {/* Thanh nhập nhanh API Key nếu người dùng mở */}
         {showApiKeyModal && (
           <div className="border-t border-botanical-border bg-botanical-mossMist/70 px-6 py-2.5">
             <div className="mx-auto flex max-w-4xl items-center gap-3 text-xs">
@@ -1461,20 +1723,31 @@ export default function OmniErrorLogAppPage() {
       <main className="mx-auto max-w-[1440px] space-y-8 px-4 py-6 sm:px-6">
         {activeTab === 'WORKSTATION' && (
           <>
+            {/* 1. Form Nhập Lỗi 3 Cột WHAT - WHY - HOW */}
             <ErrorEntryForm
               editingItem={editingItem}
               customApiKey={customApiKey}
               onCancelEdit={() => setEditingItem(null)}
-              onSaveSuccess={(savedItem, openTwinModal) => {
+              onSaveSuccess={async (savedItem, openTwinModal) => {
                 setEditingItem(null);
-                void upsertLogsToSupabase(savedItem);
-                void fetchAllData(true);
+                // Cập nhật Optimistic tức thì cả danh sách và bộ chỉ số Analytics (0ms)
+                const nextLogs = [
+                  savedItem,
+                  ...logs.filter((it) => it.id !== savedItem.id),
+                ];
+                applyLogsAndAnalytics(nextLogs);
+
                 if (openTwinModal) {
                   setForensicModalItem(savedItem);
                 }
+
+                // Chờ đẩy xong lên Supabase rồi mới đồng bộ lại
+                await upsertLogsToSupabase(savedItem);
+                await fetchAllData(true);
               }}
             />
 
+            {/* 2. Kho Lưu Trữ Sổ Tay Lỗi Sai Đa Môn Học */}
             <section className="space-y-4 pt-2">
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-botanical-border bg-botanical-surface px-4 py-3 shadow-paper">
                 <div>
@@ -1482,10 +1755,15 @@ export default function OmniErrorLogAppPage() {
                     KHO HỒ SƠ LỖI SAI ĐÃ MỔ XẺ ({filteredLogs.length} bản ghi)
                   </h3>
                   <p className="text-xs text-botanical-muted">
-                    Bấm vào nút <strong>&ldquo;Phòng Khám AI &amp; Bài Tập Sinh Đôi&rdquo;</strong> trên từng thẻ để giải bài tương tự phục thù tại chỗ.
+                    Bấm vào nút{' '}
+                    <strong>
+                      &ldquo;Phòng Khám AI &amp; Bài Tập Sinh Đôi&rdquo;
+                    </strong>{' '}
+                    trên từng thẻ để giải bài tương tự phục thù tại chỗ.
                   </p>
                 </div>
 
+                {/* Bộ lọc Tìm kiếm, Môn học & Mã lỗi WHY */}
                 <div className="flex flex-wrap items-center gap-2">
                   <div className="relative">
                     <Search className=" absolute left-2.5 top-2 h-3.5 w-3.5 text-botanical-muted" />
