@@ -3,7 +3,7 @@
 
 import React from 'react';
 import { DashboardAnalytics } from '@/types/error-log';
-import { WHY_GROUPS_META } from '@/constants/taxonomy';
+import { WHY_GROUPS_META, INITIAL_SUBJECTS } from '@/constants/taxonomy';
 import {
   AlertOctagon,
   BarChart3,
@@ -22,10 +22,22 @@ export default function AnalyticsDashboard({
   analytics,
   onSelectWhyFilter,
 }: AnalyticsDashboardProps) {
+  const paretoDistribution = Array.isArray(analytics?.paretoWhyDistribution)
+    ? analytics.paretoWhyDistribution
+    : [];
+
   // Tìm nhóm 20% nguyên nhân đầu bảng tạo ra tới ~80% tổng số lỗi sai
-  const vitalFewCauses = analytics.paretoWhyDistribution.filter(
-    (item, idx) => idx === 0 || item.cumulativePercentage <= 82
+  const vitalFewCauses = paretoDistribution.filter(
+    (item, idx) => idx === 0 || (item?.cumulativePercentage ?? 0) <= 82
   );
+
+  const breakpointFunnel = Array.isArray(analytics?.breakpointFunnel)
+    ? analytics.breakpointFunnel
+    : [];
+
+  const subjectBreakdown = Array.isArray(analytics?.subjectCarelessBreakdown)
+    ? analytics.subjectCarelessBreakdown
+    : [];
 
   return (
     <div className="space-y-6">
@@ -40,7 +52,7 @@ export default function AnalyticsDashboard({
               <h2 className="text-lg font-extrabold leading-snug text-botanical-ink">
                 &ldquo;Bạn đang tự vứt đi{' '}
                 <span className="underline decoration-botanical-terracotta decoration-2">
-                  {analytics.carelessTaxPercent}%
+                  {analytics?.carelessTaxPercent || 0}%
                 </span>{' '}
                 số điểm chỉ vì lỗi ẩu chứ không phải vì không biết làm.&rdquo;
               </h2>
@@ -55,7 +67,7 @@ export default function AnalyticsDashboard({
 
             <div className="flex h-24 w-24 shrink-0 flex-col items-center justify-center rounded-2xl border-2 border-botanical-terracotta bg-botanical-surface text-botanical-terracotta shadow-sm">
               <span className="font-mono text-2xl font-black">
-                {analytics.carelessTaxPercent}%
+                {analytics?.carelessTaxPercent || 0}%
               </span>
               <span className="text-[10px] font-bold uppercase">Thuế Ẩu</span>
             </div>
@@ -69,7 +81,7 @@ export default function AnalyticsDashboard({
               Tổng Lỗi Đã Mổ Xẻ
             </span>
             <div className="mt-2 font-mono text-3xl font-extrabold text-botanical-ink">
-              {analytics.totalLogs}
+              {analytics?.totalLogs || 0}
             </div>
             <span className="mt-1 text-[11px] text-botanical-eucalyptus">
               Bản ghi 3 chiều
@@ -81,7 +93,7 @@ export default function AnalyticsDashboard({
               Đến Hạn Phục Thù
             </span>
             <div className="mt-2 flex items-baseline gap-1 font-mono text-3xl font-extrabold text-botanical-ochre">
-              {analytics.dueTodayCount}
+              {analytics?.dueTodayCount || 0}
               <Flame className="h-5 w-5" />
             </div>
             <span className="mt-1 text-[11px] text-botanical-muted">
@@ -94,7 +106,7 @@ export default function AnalyticsDashboard({
               Đã Triệt Tiêu
             </span>
             <div className="mt-2 flex items-baseline gap-1 font-mono text-3xl font-extrabold text-botanical-matcha">
-              {analytics.resolvedCount}
+              {analytics?.resolvedCount || 0}
               <CheckCircle2 className="h-5 w-5" />
             </div>
             <span className="mt-1 text-[11px] text-botanical-muted">
@@ -122,32 +134,32 @@ export default function AnalyticsDashboard({
             </span>
           </div>
 
-          {analytics.paretoWhyDistribution.length === 0 ? (
+          {paretoDistribution.length === 0 ? (
             <p className="py-8 text-center text-xs text-botanical-muted">
               Chưa có dữ liệu thống kê WHY.
             </p>
           ) : (
             <div className="space-y-3">
-              {analytics.paretoWhyDistribution.map((item) => {
-                const groupMeta = WHY_GROUPS_META[item.group];
-                const isVital80 = item.cumulativePercentage <= 82;
+              {paretoDistribution.map((item) => {
+                const groupMeta = WHY_GROUPS_META[item?.group] || { badgeBg: '#4A5D4E' };
+                const isVital80 = (item?.cumulativePercentage ?? 0) <= 82;
 
                 return (
                   <div
-                    key={item.code}
-                    onClick={() => onSelectWhyFilter && onSelectWhyFilter(item.code)}
+                    key={item?.code}
+                    onClick={() => onSelectWhyFilter && item?.code && onSelectWhyFilter(item.code)}
                     className="group cursor-pointer rounded-lg border border-botanical-border bg-botanical-canvas/70 p-2.5 transition hover:border-botanical-sage"
                   >
                     <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2 text-xs">
                       <div className="flex items-center gap-2">
                         <span
                           className="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold text-white"
-                          style={{ backgroundColor: groupMeta.badgeBg }}
+                          style={{ backgroundColor: groupMeta?.badgeBg }}
                         >
-                          {item.code}
+                          {item?.code}
                         </span>
                         <span className="font-semibold text-botanical-ink group-hover:underline">
-                          {item.label}
+                          {item?.label || item?.title || item?.code}
                         </span>
                         {isVital80 && (
                           <span className="rounded bg-botanical-terracottaBg px-1.5 py-0.5 font-mono text-[10px] font-bold text-botanical-terracotta">
@@ -158,10 +170,10 @@ export default function AnalyticsDashboard({
 
                       <div className="flex items-center gap-3 font-mono text-xs">
                         <span className="font-bold text-botanical-ink">
-                          {item.count} lần ({item.percentage}%)
+                          {item?.count || 0} lần ({item?.percentage || 0}%)
                         </span>
                         <span className="text-[11px] text-botanical-muted">
-                          Lũy kế: {item.cumulativePercentage}%
+                          Lũy kế: {item?.cumulativePercentage || 0}%
                         </span>
                       </div>
                     </div>
@@ -171,8 +183,8 @@ export default function AnalyticsDashboard({
                       <div
                         className="h-full rounded-full transition-all"
                         style={{
-                          width: `${Math.max(6, item.percentage)}%`,
-                          backgroundColor: groupMeta.badgeBg,
+                          width: `${Math.max(6, item?.percentage || 0)}%`,
+                          backgroundColor: groupMeta?.badgeBg,
                         }}
                       />
                     </div>
@@ -200,32 +212,32 @@ export default function AnalyticsDashboard({
             </div>
 
             <div className="space-y-3">
-              {analytics.breakpointFunnel.map((stageItem, idx) => (
+              {breakpointFunnel.map((stageItem, idx) => (
                 <div
-                  key={stageItem.stage}
+                  key={stageItem?.stage || stageItem?.id || idx}
                   className="rounded-lg border border-botanical-border bg-botanical-canvas p-3"
                 >
                   <div className="mb-1 flex items-center justify-between text-xs">
                     <span className="font-bold text-botanical-ink">
-                      {stageItem.label}
+                      {stageItem?.label || stageItem?.title || stageItem?.stage}
                     </span>
                     <span className="font-mono font-bold text-botanical-sage">
-                      {stageItem.count} lỗi ({stageItem.percentage}%)
+                      {stageItem?.count || 0} lỗi ({stageItem?.percentage || 0}%)
                     </span>
                   </div>
                   <div className="h-2.5 w-full overflow-hidden rounded-full bg-botanical-mossMist">
                     <div
                       className="h-full rounded-full transition-all"
                       style={{
-                        width: `${Math.max(4, stageItem.percentage)}%`,
+                        width: `${Math.max(4, stageItem?.percentage || 0)}%`,
                         backgroundColor:
                           idx === 0
                             ? '#C85A3B'
                             : idx === 1
-                            ? '#2C4C3E'
-                            : idx === 2
-                            ? '#D48C2A'
-                            : '#3B7A57',
+                              ? '#2C4C3E'
+                              : idx === 2
+                                ? '#D48C2A'
+                                : '#3B7A57',
                       }}
                     />
                   </div>
@@ -246,33 +258,51 @@ export default function AnalyticsDashboard({
             </div>
 
             <div className="space-y-3">
-              {analytics.subjectCarelessBreakdown.map((sub) => (
-                <div
-                  key={sub.subjectName}
-                  className="rounded-lg border border-botanical-border bg-botanical-canvas p-3 text-xs"
-                >
-                  <div className="mb-1.5 flex items-center justify-between">
-                    <span className="font-bold text-botanical-ink">
-                      {sub.subjectName} ({sub.total} câu)
-                    </span>
-                    <span className="rounded bg-botanical-terracottaBg px-2 py-0.5 font-mono text-[11px] font-bold text-botanical-terracotta">
-                      Thuế Ẩu: {sub.carelessPercent}%
-                    </span>
-                  </div>
+              {subjectBreakdown.length === 0 ? (
+                <p className="py-4 text-center text-xs text-botanical-muted">
+                  Chưa có dữ liệu phân loại môn học.
+                </p>
+              ) : (
+                subjectBreakdown.map((sub) => {
+                  const subDef = INITIAL_SUBJECTS.find((s) => s.id === sub?.subjectId);
+                  const displayName = sub?.subjectName || subDef?.name || sub?.subjectId || 'Môn học';
+                  const totalCount = sub?.total || sub?.totalLogs || sub?.count || 0;
+                  const carelessPct = sub?.carelessPercent ?? sub?.carelessTaxPercent ?? 0;
+                  const carelessCnt = sub?.carelessCount ?? 0;
+                  const knowledgeCnt = sub?.knowledgeCount ?? sub?.deepCount ?? 0;
+                  const trapCnt = sub?.trapCount ?? 0;
 
-                  <div className="flex flex-wrap gap-3 text-[11px] text-botanical-muted">
-                    <span className="text-botanical-terracotta">
-                      • Nhóm A (Ẩu): <strong>{sub.carelessCount}</strong>
-                    </span>
-                    <span className="text-botanical-sage">
-                      • Nhóm B (Kiến thức): <strong>{sub.knowledgeCount}</strong>
-                    </span>
-                    <span className="text-botanical-ochre">
-                      • Nhóm C (Sập bẫy): <strong>{sub.trapCount}</strong>
-                    </span>
-                  </div>
-                </div>
-              ))}
+                  return (
+                    <div
+                      key={sub?.subjectId || sub?.subjectName}
+                      className="rounded-lg border border-botanical-border bg-botanical-canvas p-3 text-xs"
+                    >
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <span className="font-bold text-botanical-ink">
+                          {displayName} ({totalCount} câu)
+                        </span>
+                        <span className="rounded bg-botanical-terracottaBg px-2 py-0.5 font-mono text-[11px] font-bold text-botanical-terracotta">
+                          Thuế Ẩu: {carelessPct}%
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap gap-3 text-[11px] text-botanical-muted">
+                        <span className="text-botanical-terracotta">
+                          • Nhóm A (Ẩu): <strong>{carelessCnt}</strong>
+                        </span>
+                        <span className="text-botanical-sage">
+                          • Nhóm B (Kiến thức): <strong>{knowledgeCnt}</strong>
+                        </span>
+                        {trapCnt > 0 && (
+                          <span className="text-botanical-ochre">
+                            • Nhóm C (Sập bẫy): <strong>{trapCnt}</strong>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </div>
