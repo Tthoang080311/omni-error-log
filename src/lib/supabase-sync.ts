@@ -126,7 +126,7 @@ export async function testSupabaseConnection(): Promise<{
     return {
       ok: true,
       rowCount: count,
-      message: `Kết nối & Đồng bộ thành công! Đang có ${count} bản ghi trên bảng "${cfg.tableName}".`,
+      message: `Kết nối thành công! Đang có ${count} bản ghi trên bảng "${cfg.tableName}".`,
     };
   } catch (err) {
     return {
@@ -206,7 +206,6 @@ export async function fetchAllLogsFromSupabase(): Promise<
   }
 }
 
-// Hàm nội bộ thử đẩy 1 mảng bản ghi với 3 cấp độ Fallback cấu trúc cột
 async function tryPostRowsWithFallback(
   endpoint: string,
   headers: HeadersInit,
@@ -214,7 +213,6 @@ async function tryPostRowsWithFallback(
 ): Promise<boolean> {
   const nowIso = new Date().toISOString();
 
-  // Khử trùng lặp ID tuyệt đối trước khi gửi lên Postgres ON CONFLICT
   const uniqueMap = new Map<string, ErrorLogItem>();
   items.forEach((it) => {
     if (it && it.id) uniqueMap.set(String(it.id), it);
@@ -222,7 +220,7 @@ async function tryPostRowsWithFallback(
   const uniqueItems = Array.from(uniqueMap.values());
   if (uniqueItems.length === 0) return true;
 
-  // Cấp 1: Chuẩn { id, payload, updated_at }
+  // Cấp 1: { id, payload, updated_at }
   const rowsStage1 = uniqueItems.map((it) => ({
     id: String(it.id),
     payload: it,
@@ -235,7 +233,7 @@ async function tryPostRowsWithFallback(
   }).catch(() => null);
   if (res1?.ok) return true;
 
-  // Cấp 2: Bảng chỉ có { id, payload } (không có updated_at)
+  // Cấp 2: { id, payload }
   const rowsStage2 = uniqueItems.map((it) => ({
     id: String(it.id),
     payload: it,
@@ -247,7 +245,7 @@ async function tryPostRowsWithFallback(
   }).catch(() => null);
   if (res2?.ok) return true;
 
-  // Cấp 3: Bảng cũ có các cột phẳng snake_case đi kèm payload
+  // Cấp 3: Các cột phẳng đi kèm payload
   const rowsStage3 = uniqueItems.map((it) => ({
     id: String(it.id),
     subject_id: it.subjectId || 'MATH',
@@ -276,19 +274,15 @@ export async function upsertLogsToSupabase(
   if (!cfg.isConfigured) return false;
 
   const list = Array.isArray(itemsOrSingle) ? itemsOrSingle : [itemsOrSingle];
-  const endpoint = `${cfg.url}/rest/v1/${encodeURIComponent(
-    cfg.tableName
-  )}?on_conflict=id`;
+  const endpoint = `${cfg.url}/rest/v1/${encodeURIComponent(cfg.tableName)}?on_conflict=id`;
   const headers = buildSupabaseHeaders(
     cfg.anonKey,
     'resolution=merge-duplicates,return=minimal'
   );
 
   try {
-    // 1. Đẩy danh sách câu hỏi chính
     const logsOk = await tryPostRowsWithFallback(endpoint, headers, list);
 
-    // 2. Đẩy tách riêng bản ghi Meta (Chuyên đề & Nguồn đề) để không bao giờ làm hỏng luồng câu hỏi
     if (typeof window !== 'undefined') {
       try {
         const rawSubs = window.localStorage.getItem(
@@ -315,7 +309,7 @@ export async function upsertLogsToSupabase(
           );
         }
       } catch {
-        // Bỏ qua lỗi Meta
+        // Bỏ qua
       }
     }
 
