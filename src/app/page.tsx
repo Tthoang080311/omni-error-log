@@ -33,6 +33,9 @@ import {
   fetchAllLogsFromSupabase,
   upsertLogsToSupabase,
   deleteLogFromSupabase,
+  getSupabaseRuntimeConfig,
+  saveSupabaseRuntimeConfig,
+  testSupabaseConnection,
 } from '@/lib/supabase-sync';
 import {
   BookOpen,
@@ -1871,7 +1874,7 @@ export default function OmniErrorLogAppPage() {
   const [reviewSourceFilter, setReviewSourceFilter] = useState<string>('ALL');
   const [reviewCursorIdx, setReviewCursorIdx] = useState<number>(0);
 
-  // Đồng bộ danh sách Chuyên đề & Nguồn đề từ localStorage (đã lưu trong ErrorEntryForm)
+  // Đồng bộ danh sách Chuyên đề & Nguồn đề từ localStorage
   const [savedSubjectsList, setSavedSubjectsList] =
     useState(INITIAL_SUBJECTS);
   const [customSourcesList, setCustomSourcesList] = useState<string[]>([]);
@@ -1883,6 +1886,16 @@ export default function OmniErrorLogAppPage() {
 
   const [customApiKey, setCustomApiKey] = useState<string>('');
   const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false);
+
+  // --- STATE CẤU HÌNH TRỰC TIẾP SUPABASE CLOUD KEY TRÊN GIAO DIỆN ---
+  const [supabaseUrlInput, setSupabaseUrlInput] = useState<string>('');
+  const [supabaseAnonKeyInput, setSupabaseAnonKeyInput] = useState<string>('');
+  const [supabaseTableInput, setSupabaseTableInput] =
+    useState<string>('error_logs');
+  const [cloudTestFeedback, setCloudTestFeedback] = useState<{
+    ok?: boolean;
+    message: string;
+  } | null>(null);
 
   // --- STATE ĐỒNG BỘ TRỰC TIẾP ---
   const [syncStatus, setSyncStatus] = useState<LiveSyncStatus>('LIVE_LOCAL');
@@ -1903,7 +1916,7 @@ export default function OmniErrorLogAppPage() {
     HTMLInputElement | HTMLTextAreaElement | null
   >(null);
 
-  // Đọc danh sách Chuyên đề nhỏ và Nguồn đề đã lưu từ localStorage
+  // Đọc danh sách Chuyên đề nhỏ, Nguồn đề & Cấu hình Supabase từ localStorage
   const refreshSavedTaxonomyFromStorage = useCallback(() => {
     try {
       const rawSubs = window.localStorage.getItem(LOCAL_SUBJECTS_STORAGE_KEY);
@@ -1920,6 +1933,10 @@ export default function OmniErrorLogAppPage() {
           setCustomSourcesList(parsedSources);
         }
       }
+      const sbCfg = getSupabaseRuntimeConfig();
+      setSupabaseUrlInput(sbCfg.url);
+      setSupabaseAnonKeyInput(sbCfg.anonKey);
+      setSupabaseTableInput(sbCfg.tableName);
     } catch {
       // Bỏ qua
     }
@@ -2103,7 +2120,9 @@ export default function OmniErrorLogAppPage() {
           fetchAllLogsFromSupabase().catch(() => null),
         ]);
 
-        const localLogs: ErrorLogItem[] =
+        refreshSavedTaxonomyFromStorage();
+
+        const apiLogs: ErrorLogItem[] =
           localRes && localRes.ok && Array.isArray(localRes.logs)
             ? sanitizeLogList(localRes.logs)
             : [];
@@ -2111,69 +2130,75 @@ export default function OmniErrorLogAppPage() {
         const cloudLogs =
           rawCloudLogs !== null ? sanitizeLogList(rawCloudLogs) : null;
 
-        if (localRes?.ok || cloudLogs !== null) {
-          let mergedLogs: ErrorLogItem[] = [...localLogs];
+        // Hợp nhất cả dữ liệu đang có trong máy (logsRef.current) + API + Supabase Cloud
+        const byId = new Map<string, ErrorLogItem>();
+        logsRef.current.forEach((item) => byId.set(item.id, item));
+        apiLogs.forEach((item) => {
+          const existing = byId.get(item.id);
+          if (
+            !existing ||
+            new Date(item.updatedAt || 0).getTime() >=
+              new Date(existing.updatedAt || 0).getTime()
+          ) {
+            byId.set(item.id, item);
+          }
+        });
 
-          if (cloudLogs !== null) {
-            const byId = new Map<string, ErrorLogItem>();
-            mergedLogs.forEach((item) => byId.set(item.id, item));
+        if (cloudLogs !== null) {
+          const cloudIdSet = new Set<string>();
+          const toPushToCloud: ErrorLogItem[] = [];
 
-            const toPushToCloud: ErrorLogItem[] = [];
-            const cloudIdSet = new Set<string>();
-
-            cloudLogs.forEach((cItem) => {
-              cloudIdSet.add(cItem.id);
-              const existingLocal = byId.get(cItem.id);
-              if (
-                !existingLocal ||
-                new Date(cItem.updatedAt || 0).getTime() >=
-                  new Date(existingLocal.updatedAt || 0).getTime()
-              ) {
-                byId.set(cItem.id, cItem);
-              }
-            });
-
-            mergedLogs.forEach((lItem) => {
-              if (!cloudIdSet.has(lItem.id)) {
-                toPushToCloud.push(lItem);
-              }
-            });
-
-            if (toPushToCloud.length > 0) {
-              void upsertLogsToSupabase(toPushToCloud).catch(() => false);
+          cloudLogs.forEach((cItem) => {
+            cloudIdSet.add(cItem.id);
+            const existingLocal = byId.get(cItem.id);
+            if (
+              !existingLocal ||
+              new Date(cItem.updatedAt || 0).getTime() >=
+                new Date(existingLocal.updatedAt || 0).getTime()
+            ) {
+              byId.set(cItem.id, cItem);
+            } else {
+              toPushToCloud.push(existingLocal);
             }
+          });
 
-            mergedLogs = Array.from(byId.values()).sort(
-              (a, b) =>
-                new Date(b.createdAt || 0).getTime() -
-                new Date(a.createdAt || 0).getTime()
-            );
+          byId.forEach((localItem) => {
+            if (!cloudIdSet.has(localItem.id)) {
+              toPushToCloud.push(localItem);
+            }
+          });
+
+          if (toPushToCloud.length > 0) {
+            void upsertLogsToSupabase(toPushToCloud).catch(() => false);
           }
-
-          const computedAnalytics = computeRealtimeAnalytics(
-            mergedLogs,
-            localRes?.analytics
-          );
-          const nextSig = `${mergedLogs.length}_${mergedLogs[0]?.updatedAt || ''}_${computedAnalytics.resolvedCount}_${computedAnalytics.dueTodayCount}_${computedAnalytics.carelessTaxPercent}`;
-
-          if (!silent || nextSig !== lastPayloadSignatureRef.current) {
-            applyLogsAndAnalytics(mergedLogs, localRes?.analytics, true);
-          }
-
-          setSyncLatencyMs(Math.round(performance.now() - startPerf));
-          setLastSyncedAt(
-            new Date().toLocaleTimeString('vi-VN', {
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-            })
-          );
-          setSyncStatus(
-            cloudLogs !== null || localRes?.ok ? 'LIVE_CLOUD' : 'LIVE_LOCAL'
-          );
-        } else {
-          setSyncStatus('ERROR');
         }
+
+        const mergedLogs = Array.from(byId.values()).sort(
+          (a, b) =>
+            new Date(b.createdAt || 0).getTime() -
+            new Date(a.createdAt || 0).getTime()
+        );
+
+        const computedAnalytics = computeRealtimeAnalytics(
+          mergedLogs,
+          localRes?.analytics
+        );
+        const nextSig = `${mergedLogs.length}_${mergedLogs[0]?.updatedAt || ''}_${computedAnalytics.resolvedCount}_${computedAnalytics.dueTodayCount}_${computedAnalytics.carelessTaxPercent}`;
+
+        if (!silent || nextSig !== lastPayloadSignatureRef.current) {
+          applyLogsAndAnalytics(mergedLogs, localRes?.analytics, true);
+        }
+
+        setSyncLatencyMs(Math.round(performance.now() - startPerf));
+        setLastSyncedAt(
+          new Date().toLocaleTimeString('vi-VN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          })
+        );
+        // Sửa lỗi báo ảo: chỉ hiện LIVE_CLOUD khi thực sự kết nối được tới Supabase
+        setSyncStatus(cloudLogs !== null ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
       } catch {
         setSyncStatus(pendingOutboxCount > 0 ? 'OFFLINE_QUEUE' : 'ERROR');
       } finally {
@@ -2181,7 +2206,12 @@ export default function OmniErrorLogAppPage() {
         setIsLoading(false);
       }
     },
-    [applyLogsAndAnalytics, flushOfflineOutbox, pendingOutboxCount]
+    [
+      applyLogsAndAnalytics,
+      flushOfflineOutbox,
+      pendingOutboxCount,
+      refreshSavedTaxonomyFromStorage,
+    ]
   );
 
   useEffect(() => {
@@ -2576,7 +2606,7 @@ export default function OmniErrorLogAppPage() {
         ]);
         const data = res ? await res.json().catch(() => null) : null;
         if (data?.ok || cloudOk) {
-          setSyncStatus(cloudOk || data?.ok ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
+          setSyncStatus(cloudOk ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
           setLastSyncedAt(
             new Date().toLocaleTimeString('vi-VN', {
               hour: '2-digit',
@@ -2644,7 +2674,7 @@ export default function OmniErrorLogAppPage() {
         ]);
         const data = res ? await res.json().catch(() => null) : null;
         if (data?.ok || cloudOk) {
-          setSyncStatus(cloudOk || data?.ok ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
+          setSyncStatus(cloudOk ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
           setLastSyncedAt(
             new Date().toLocaleTimeString('vi-VN', {
               hour: '2-digit',
@@ -2679,7 +2709,7 @@ export default function OmniErrorLogAppPage() {
         ]);
         const data = res ? await res.json().catch(() => null) : null;
         if (data?.ok || cloudOk) {
-          setSyncStatus(cloudOk || data?.ok ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
+          setSyncStatus(cloudOk ? 'LIVE_CLOUD' : 'LIVE_LOCAL');
           setLastSyncedAt(
             new Date().toLocaleTimeString('vi-VN', {
               hour: '2-digit',
@@ -2727,7 +2757,7 @@ export default function OmniErrorLogAppPage() {
                 </span>
               </div>
               <p className="text-xs text-botanical-muted">
-                Trạm Phân tích Lỗi sai Đa môn học &amp; Active Recall Split-Pane • Local-First SQLite &amp; Supabase
+                Trạm Phân tích Lỗi sai Đa môn học &amp; Active Recall Split-Pane • Đồng Bộ Đa Thiết Bị Supabase Cloud
               </p>
             </div>
           </div>
@@ -2795,21 +2825,25 @@ export default function OmniErrorLogAppPage() {
               <button
                 type="button"
                 onClick={() => void fetchAllData(false)}
+                title={
+                  syncStatus === 'LIVE_CLOUD'
+                    ? `Đã đồng bộ Supabase Cloud lúc ${lastSyncedAt} (${syncLatencyMs ?? 0}ms)`
+                    : 'Đang chỉ lưu trên trình duyệt này. Bấm nút Chìa khóa bên phải để nhập Supabase Key đồng bộ sang iPad/iPhone!'
+                }
                 className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-semibold text-botanical-ink hover:bg-botanical-mossMist"
               >
                 {syncStatus === 'SYNCING' ? (
                   <RefreshCw className="h-3.5 w-3.5 animate-spin text-botanical-sage" />
-                ) : syncStatus === 'LIVE_CLOUD' ||
-                  syncStatus === 'LIVE_LOCAL' ? (
+                ) : syncStatus === 'LIVE_CLOUD' ? (
                   <Wifi className="h-3.5 w-3.5 text-botanical-matcha" />
                 ) : (
                   <WifiOff className="h-3.5 w-3.5 text-botanical-terracotta" />
                 )}
                 <span>
                   {syncStatus === 'LIVE_CLOUD'
-                    ? 'Cloud + SQLite'
+                    ? 'Cloud Đã Đồng Bộ'
                     : syncStatus === 'LIVE_LOCAL'
-                      ? 'Local Sync'
+                      ? 'Chỉ Lưu Máy Này (Chưa Cloud)'
                       : syncStatus === 'SYNCING'
                         ? 'Đang đồng bộ...'
                         : pendingOutboxCount > 0
@@ -2895,39 +2929,238 @@ export default function OmniErrorLogAppPage() {
             <button
               type="button"
               onClick={() => setShowApiKeyModal((p) => !p)}
-              className="inline-flex items-center gap-1 rounded-lg border border-botanical-border bg-botanical-canvas px-2.5 py-1.5 text-xs font-medium text-botanical-muted hover:text-botanical-ink"
+              className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition ${
+                syncStatus === 'LIVE_CLOUD'
+                  ? 'border-botanical-sage bg-botanical-canvas text-botanical-sage'
+                  : 'border-botanical-terracotta bg-botanical-terracotta text-white'
+              }`}
+              title="Cấu hình Supabase Cloud Key & Gemini API Key"
             >
               <KeyRound className="h-3.5 w-3.5" />
+              <span>Cloud Key</span>
             </button>
           </div>
         </div>
 
+        {/* BẢNG CẤU HÌNH TRỰC TIẾP SUPABASE CLOUD KEY & GEMINI KEY */}
         {showApiKeyModal && (
-          <div className="border-t border-botanical-border bg-botanical-mossMist px-6 py-2.5">
-            <div className="mx-auto flex max-w-4xl items-center gap-3 text-xs">
-              <span className="font-semibold text-botanical-sage">
-                Gemini API Key (Tùy chọn):
-              </span>
-              <input
-                type="password"
-                value={customApiKey}
-                onChange={(e) => {
-                  setCustomApiKey(e.target.value);
-                  window.localStorage.setItem(
-                    'OMNI_CUSTOM_GEMINI_KEY',
-                    e.target.value
-                  );
-                }}
-                placeholder="AIzaSy..."
-                className="flex-1 rounded border border-botanical-border bg-botanical-surface px-2.5 py-1 text-xs"
-              />
-              <button
-                type="button"
-                onClick={() => setShowApiKeyModal(false)}
-                className="rounded border border-botanical-sage bg-botanical-sage px-3 py-1 font-semibold text-white"
-              >
-                Lưu &amp; Đóng
-              </button>
+          <div className="border-t border-botanical-border bg-botanical-mossMist px-4 py-4 sm:px-6">
+            <div className="mx-auto max-w-5xl space-y-3 rounded-xl border border-botanical-border bg-botanical-surface p-4 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-botanical-border pb-2.5">
+                <div>
+                  <h3 className="text-sm font-extrabold text-botanical-ink">
+                    CẤU HÌNH ĐỒNG BỘ ĐÁM MÂY SUPABASE (MAC • IPAD • IPHONE) &amp; GEMINI AI KEY
+                  </h3>
+                  <p className="text-[11px] text-botanical-muted">
+                    Nhập <strong>Supabase Project URL</strong> và <strong>Anon Public Key</strong> trên cả máy tính, iPad và điện thoại để đồng bộ dữ liệu 2 chiều tức thì.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const bundle = JSON.stringify({
+                        u: supabaseUrlInput.trim(),
+                        k: supabaseAnonKeyInput.trim(),
+                        t: supabaseTableInput.trim() || 'error_logs',
+                        g: customApiKey.trim(),
+                      });
+                      void navigator.clipboard.writeText(bundle);
+                      setCloudTestFeedback({
+                        ok: true,
+                        message:
+                          'Đã copy Mã Cấu Hình Nhanh! Bạn hãy gửi qua Zalo/iMessage sang iPad/iPhone rồi bấm "Dán Mã Cấu Hình Nhanh".',
+                      });
+                    }}
+                    className="rounded border border-botanical-border bg-botanical-canvas px-2.5 py-1 font-mono text-[10px] font-bold text-botanical-sage hover:border-botanical-sage"
+                  >
+                    Copy Mã Sang iPad/iPhone
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const text = await navigator.clipboard.readText();
+                        const parsed = JSON.parse(text);
+                        if (parsed.u) setSupabaseUrlInput(parsed.u);
+                        if (parsed.k) setSupabaseAnonKeyInput(parsed.k);
+                        if (parsed.t) setSupabaseTableInput(parsed.t);
+                        if (parsed.g) {
+                          setCustomApiKey(parsed.g);
+                          window.localStorage.setItem(
+                            'OMNI_CUSTOM_GEMINI_KEY',
+                            parsed.g
+                          );
+                        }
+                        setCloudTestFeedback({
+                          ok: true,
+                          message:
+                            'Đã dán cấu hình thành công! Hãy bấm "Lưu Key & Đồng Bộ Ngay" bên dưới.',
+                        });
+                      } catch {
+                        setCloudTestFeedback({
+                          ok: false,
+                          message:
+                            'Clipboard không chứa Mã Cấu Hình Nhanh hợp lệ.',
+                        });
+                      }
+                    }}
+                    className="rounded border border-botanical-border bg-botanical-canvas px-2.5 py-1 font-mono text-[10px] font-bold text-botanical-terracotta hover:border-botanical-terracotta"
+                  >
+                    Dán Mã Cấu Hình Nhanh
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
+                <div className="sm:col-span-5">
+                  <label className="mb-1 block font-mono text-[10px] font-bold uppercase text-botanical-sage">
+                    1. Supabase Project URL:
+                  </label>
+                  <input
+                    type="text"
+                    value={supabaseUrlInput}
+                    onChange={(e) => setSupabaseUrlInput(e.target.value)}
+                    placeholder="https://xyzcompany.supabase.co"
+                    className="w-full rounded border border-botanical-border bg-botanical-canvas px-2.5 py-1.5 font-mono text-xs text-botanical-ink"
+                  />
+                </div>
+
+                <div className="sm:col-span-5">
+                  <label className="mb-1 block font-mono text-[10px] font-bold uppercase text-botanical-sage">
+                    2. Supabase Anon Key (Public):
+                  </label>
+                  <input
+                    type="password"
+                    value={supabaseAnonKeyInput}
+                    onChange={(e) => setSupabaseAnonKeyInput(e.target.value)}
+                    placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    className="w-full rounded border border-botanical-border bg-botanical-canvas px-2.5 py-1.5 font-mono text-xs text-botanical-ink"
+                  />
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="mb-1 block font-mono text-[10px] font-bold uppercase text-botanical-muted">
+                    3. Tên Bảng:
+                  </label>
+                  <input
+                    type="text"
+                    value={supabaseTableInput}
+                    onChange={(e) => setSupabaseTableInput(e.target.value)}
+                    placeholder="error_logs"
+                    className="w-full rounded border border-botanical-border bg-botanical-canvas px-2.5 py-1.5 font-mono text-xs text-botanical-ink"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-12">
+                <div className="sm:col-span-6">
+                  <label className="mb-1 block font-mono text-[10px] font-bold uppercase text-botanical-muted">
+                    4. Gemini API Key (Dùng cho Phòng Khám AI):
+                  </label>
+                  <input
+                    type="password"
+                    value={customApiKey}
+                    onChange={(e) => {
+                      setCustomApiKey(e.target.value);
+                      window.localStorage.setItem(
+                        'OMNI_CUSTOM_GEMINI_KEY',
+                        e.target.value
+                      );
+                    }}
+                    placeholder="AIzaSy..."
+                    className="w-full rounded border border-botanical-border bg-botanical-canvas px-2.5 py-1.5 font-mono text-xs text-botanical-ink"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-end justify-end gap-2 sm:col-span-6">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      saveSupabaseRuntimeConfig(
+                        supabaseUrlInput,
+                        supabaseAnonKeyInput,
+                        supabaseTableInput
+                      );
+                      setCloudTestFeedback({
+                        message: 'Đang kiểm tra kết nối tới Supabase...',
+                      });
+                      const res = await testSupabaseConnection();
+                      setCloudTestFeedback(res);
+                      if (res.ok) {
+                        await fetchAllData(false);
+                      }
+                    }}
+                    className="rounded-lg border border-botanical-sage bg-botanical-sage px-3 py-1.5 font-bold text-white"
+                  >
+                    Lưu Key &amp; Đồng Bộ Ngay
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      saveSupabaseRuntimeConfig(
+                        supabaseUrlInput,
+                        supabaseAnonKeyInput,
+                        supabaseTableInput
+                      );
+                      setCloudTestFeedback({
+                        message: `Đang đẩy toàn bộ ${logsRef.current.length} bản ghi trên máy này lên Supabase...`,
+                      });
+                      const ok = await upsertLogsToSupabase(logsRef.current);
+                      setCloudTestFeedback({
+                        ok,
+                        message: ok
+                          ? `Đã đẩy thành công ${logsRef.current.length} bản ghi + Chuyên đề lên Supabase! Giờ bạn có thể mở trên iPad/iPhone.`
+                          : 'Đẩy dữ liệu thất bại. Hãy kiểm tra lại URL/Key hoặc tạo bảng SQL bên dưới.',
+                      });
+                      if (ok) await fetchAllData(true);
+                    }}
+                    className="rounded-lg border border-botanical-terracotta bg-botanical-terracotta px-3 py-1.5 font-bold text-white"
+                  >
+                    Đẩy Toàn Bộ Máy Này Lên Cloud
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKeyModal(false)}
+                    className="rounded-lg border border-botanical-border bg-botanical-canvas px-3 py-1.5 font-semibold text-botanical-muted hover:text-botanical-ink"
+                  >
+                    Đóng
+                  </button>
+                </div>
+              </div>
+
+              {cloudTestFeedback && (
+                <div
+                  className={`rounded-lg border px-3 py-2 font-mono text-[11px] font-bold ${
+                    cloudTestFeedback.ok === true
+                      ? 'border-botanical-matcha bg-botanical-matchaBg text-botanical-matcha'
+                      : cloudTestFeedback.ok === false
+                        ? 'border-botanical-terracotta bg-botanical-terracottaBg text-botanical-terracotta'
+                        : 'border-botanical-border bg-botanical-canvas text-botanical-ink'
+                  }`}
+                >
+                  {cloudTestFeedback.message}
+                </div>
+              )}
+
+              <details className="rounded border border-botanical-border bg-botanical-canvas p-2.5 text-[11px]">
+                <summary className="cursor-pointer font-mono font-bold text-botanical-sage">
+                  📌 Lệnh SQL tạo bảng chuẩn trên Supabase (Nếu bạn chưa tạo bảng error_logs):
+                </summary>
+                <pre className="mt-2 overflow-x-auto rounded border border-botanical-border bg-botanical-surface p-2 font-mono text-[10px] text-botanical-ink">
+{`create table if not exists public.error_logs (
+  id text primary key,
+  payload jsonb not null,
+  updated_at timestamptz default now()
+);
+alter table public.error_logs enable row level security;
+create policy "Allow public full access" on public.error_logs for all using (true) with check (true);`}
+                </pre>
+              </details>
             </div>
           </div>
         )}
@@ -2937,7 +3170,7 @@ export default function OmniErrorLogAppPage() {
       <main className="mx-auto max-w-[1440px] space-y-6 px-4 py-6 sm:px-6">
         {activeTab === 'WORKSTATION' && (
           <>
-            {/* 1. Form Nhập Lỗi 3 Cột WHAT - WHY - HOW (Đã tích hợp trực tiếp Chuyên đề nhỏ & Nguồn đề bên trong Khung 1) */}
+            {/* 1. Form Nhập Lỗi 3 Cột WHAT - WHY - HOW */}
             <ErrorEntryForm
               editingItem={editingItem}
               customApiKey={customApiKey}
