@@ -67,6 +67,17 @@ import {
   XCircle,
   FileText,
   Columns,
+  FolderKanban,
+  Plus,
+  X,
+  Maximize2,
+  Layers,
+  List,
+  ChevronDown,
+  ChevronRight,
+  Tag,
+  ArrowLeft,
+  ArrowRight,
 } from 'lucide-react';
 
 type ActiveWorkspaceTab = 'WORKSTATION' | 'ANALYTICS' | 'REVIEW' | 'CHECKLIST';
@@ -90,6 +101,67 @@ const LOCAL_CACHE_KEY = 'OMNI_ERROR_LOG_SNAPSHOT_V1';
 const LOCAL_OUTBOX_KEY = 'OMNI_ERROR_LOG_OUTBOX_V1';
 const LOCAL_IME_MODE_KEY = 'OMNI_VN_IME_MODE';
 const LOCAL_SPLIT_RATIO_KEY = 'OMNI_SPLIT_PANE_LEFT_PERCENT_V1';
+const LOCAL_CUSTOM_TOPICS_KEY = 'OMNI_CUSTOM_TOPICS_MAP_V1';
+const LOCAL_CUSTOM_SOURCES_KEY = 'OMNI_CUSTOM_SOURCES_LIST_V1';
+const SOURCE_REF_PREFIX = '[NGUỒN]: ';
+const DEFAULT_UNGROUPED_SOURCE = 'Chưa phân loại nguồn đề';
+
+// ============================================================================
+// HÀM ĐỌC / GHI "NGUỒN ĐỀ" TƯƠNG THÍCH 100% VỚI SQLITE & SUPABASE
+// ============================================================================
+function extractSourceFromItem(item: ErrorLogItem): string {
+  const anyItem = item as Record<string, unknown>;
+  if (typeof anyItem.sourceName === 'string' && anyItem.sourceName.trim()) {
+    return anyItem.sourceName.trim();
+  }
+  const refs = Array.isArray(item.references) ? item.references : [];
+  const taggedRef = refs.find(
+    (r) => typeof r?.title === 'string' && r.title.startsWith(SOURCE_REF_PREFIX)
+  );
+  if (taggedRef) {
+    return (
+      taggedRef.title.slice(SOURCE_REF_PREFIX.length).trim() ||
+      DEFAULT_UNGROUPED_SOURCE
+    );
+  }
+  const firstNonYoutubeRef = refs.find(
+    (r) => r?.type !== 'YOUTUBE' && typeof r?.title === 'string' && r.title.trim()
+  );
+  if (firstNonYoutubeRef) {
+    return firstNonYoutubeRef.title.trim();
+  }
+  return DEFAULT_UNGROUPED_SOURCE;
+}
+
+function attachSourceToItem(
+  item: ErrorLogItem,
+  rawSourceName: string
+): ErrorLogItem {
+  const cleanSource = rawSourceName.trim();
+  const existingRefs = Array.isArray(item.references)
+    ? item.references.filter(
+        (r) =>
+          !(typeof r?.title === 'string' && r.title.startsWith(SOURCE_REF_PREFIX))
+      )
+    : [];
+
+  const nextRefs = cleanSource
+    ? [
+        {
+          id: `src_${ item.id }`,
+          title: `${SOURCE_REF_PREFIX}${cleanSource}`,
+          type: 'BOOK' as const,
+        },
+        ...existingRefs,
+      ]
+    : existingRefs;
+
+  return {
+    ...item,
+    references: nextRefs as ErrorLogItem['references'],
+    ...(cleanSource ? { sourceName: cleanSource } : { sourceName: '' }),
+  } as ErrorLogItem;
+}
 
 // ============================================================================
 // DANH MỤC QUICK "ROOT CAUSE" TAGS (ĐỒNG BỘ TRỰC TIẾP VỚI WHY_CODES)
@@ -129,7 +201,7 @@ const QUICK_ROOT_CAUSE_TAGS: readonly QuickRootCauseTag[] = [
 ];
 
 // ============================================================================
-// HÀM CHUẨN HÓA DỮ LIỆU CHỐNG SẬP (.twinQuestions.length, .whyCodes, .references)
+// HÀM CHUẨN HÓA DỮ LIỆU CHỐNG SẬP
 // ============================================================================
 function sanitizeLogItem(raw: any): ErrorLogItem {
   const base =
@@ -202,6 +274,117 @@ function sanitizeLogList(list: unknown): ErrorLogItem[] {
 }
 
 // ============================================================================
+// COMPONENT KHUNG ZOOM ĐỀ BÀI ĐA NĂNG (DÙNG CHUNG CHO MỌI NƠI + FULLSCREEN)
+// ============================================================================
+interface UniversalZoomableProblemViewProps {
+  questionText: string;
+  problemImageUrl?: string;
+  titleBadge?: string;
+  maxHeightClass?: string;
+  onOpenFullscreen?: () => void;
+}
+
+const UniversalZoomableProblemView = memo(
+  function UniversalZoomableProblemView({
+    questionText,
+    problemImageUrl,
+    titleBadge = 'KHUNG SOI ĐỀ BÀI (CUỘN CHUỘT / CHỤM 2 NGÓN ĐỂ ZOOM & KÉO)',
+    maxHeightClass = '!max-h-[460px]',
+    onOpenFullscreen,
+  }: UniversalZoomableProblemViewProps) {
+    return (
+      <div className="rounded-lg border border-botanical-border bg-botanical-surface p-2.5">
+        <TransformWrapper
+          initialScale={1}
+          minScale={0.5}
+          maxScale={5}
+          wheel={{ step: 0.15 }}
+          pinch={{ step: 5 }}
+          doubleClick={{ mode: 'zoomIn' }}
+          panning={{ velocityDisabled: false }}
+        >
+          {({ zoomIn, zoomOut, resetTransform, instance }) => (
+            <>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-1.5 border-b border-botanical-border pb-1.5">
+                <span className="font-mono text-[10px] font-bold uppercase text-botanical-sage">
+                  {titleBadge}
+                </span>
+
+                <div className="flex flex-wrap items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => zoomIn(0.3)}
+                    className="inline-flex items-center gap-1 rounded border border-botanical-border bg-botanical-canvas px-2 py-0.5 font-mono text-[10px] font-bold text-botanical-ink hover:border-botanical-sage hover:bg-botanical-mossMist"
+                    title="Phóng to (Zoom In)"
+                  >
+                    <ZoomIn className="h-3 w-3 text-botanical-sage" /> Zoom +
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => zoomOut(0.3)}
+                    className="inline-flex items-center gap-1 rounded border border-botanical-border bg-botanical-canvas px-2 py-0.5 font-mono text-[10px] font-bold text-botanical-ink hover:border-botanical-sage hover:bg-botanical-mossMist"
+                    title="Thu nhỏ (Zoom Out)"
+                  >
+                    <ZoomOut className="h-3 w-3 text-botanical-sage" /> Zoom -
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => resetTransform()}
+                    className="inline-flex items-center gap-1 rounded border border-botanical-border bg-botanical-canvas px-2 py-0.5 font-mono text-[10px] font-bold text-botanical-ink hover:border-botanical-sage"
+                    title="Đặt lại tỷ lệ gốc 100%"
+                  >
+                    <RotateCcw className="h-3 w-3 text-botanical-terracotta" />{' '}
+                    100%
+                  </button>
+                  {onOpenFullscreen && (
+                    <button
+                      type="button"
+                      onClick={onOpenFullscreen}
+                      className="inline-flex items-center gap-1 rounded border border-botanical-sage bg-botanical-sage px-2 py-0.5 font-mono text-[10px] font-bold text-white hover:bg-botanical-terracotta hover:border-botanical-terracotta"
+                      title="Mở toàn màn hình để soi đề bài rõ nhất"
+                    >
+                      <Maximize2 className="h-3 w-3" /> Toàn màn hình
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Nội dung đề bài kết hợp cả Text + Ảnh bên trong vùng Zoom */}
+              <div className="overflow-hidden rounded border border-botanical-border bg-botanical-canvas">
+                <TransformComponent
+                  wrapperClass={`!w-full ${maxHeightClass} cursor-grab active:cursor-grabbing`}
+                  contentClass="!w-full flex flex-col items-center justify-center p-3 space-y-3"
+                >
+                  {questionText && questionText.trim().length > 0 && (
+                    <div className="w-full rounded border border-botanical-border bg-botanical-surface p-3 text-xs leading-relaxed text-botanical-ink">
+                      <MathText content={questionText} />
+                    </div>
+                  )}
+
+                  {problemImageUrl ? (
+                    <img
+                      src={problemImageUrl}
+                      alt="Hình ảnh đề bài"
+                      className="max-h-[420px] w-auto object-contain select-none rounded border border-botanical-border bg-white p-1"
+                    />
+                  ) : (
+                    !questionText?.trim() && (
+                      <div className="py-8 text-center text-xs text-botanical-muted">
+                        Chưa có ảnh hoặc văn bản đề bài.
+                      </div>
+                    )
+                  )}
+                </TransformComponent>
+              </div>
+            </>
+          )}
+        </TransformWrapper>
+      </div>
+    );
+  }
+);
+
+// ============================================================================
 // PARSER MARKDOWN CƠ BẢN KẾT HỢP <MathText /> CHO GIẤY NHÁP TOÁN / LÝ / SAT
 // ============================================================================
 const ScratchpadMarkdownMathPreview = memo(
@@ -271,7 +454,6 @@ const ScratchpadMarkdownMathPreview = memo(
             );
           }
 
-          // Hỗ trợ in đậm **text** đơn giản kết hợp MathText
           const boldSegments = line.split(/(\*\*[^*]+\*\*)/g);
           return (
             <div key={idx} className="leading-relaxed">
@@ -857,34 +1039,32 @@ function setReactInputValue(
 }
 
 // ============================================================================
-// 2. TRẠM ACTIVE RECALL 2 CỘT (ZOOM ĐỀ BÀI + RESIZABLE SPLIT PANE + TIMER + TAGS)
+// 2. TRẠM ACTIVE RECALL 2 CỘT (DÙNG CHUNG CHO CẢ SỔ TAY & PHỤC THÙ LEITNER)
 // ============================================================================
 interface ActiveRecallSplitWorkspaceProps {
   item: ErrorLogItem;
   onUpdateItem: (updated: ErrorLogItem) => void;
   onReviewGrade?: (id: string, rememberedCorrectly: boolean) => void;
+  onOpenFullscreenZoom?: (item: ErrorLogItem) => void;
 }
 
 const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
   item,
   onUpdateItem,
   onReviewGrade,
+  onOpenFullscreenZoom,
 }: ActiveRecallSplitWorkspaceProps) {
-  // Tỷ lệ chia cột trái/phải (Mặc định 50% - 50%, lưu vào localStorage)
   const [leftPanePercent, setLeftPanePercent] = useState<number>(50);
   const splitContainerRef = useRef<HTMLDivElement | null>(null);
   const isDraggingSplitRef = useRef<boolean>(false);
 
-  // State Giấy nháp & Active Recall
   const [scratchpadText, setScratchpadText] = useState<string>('');
   const [showMarkdownPreview, setShowMarkdownPreview] = useState<boolean>(true);
   const [isAnswerRevealed, setIsAnswerRevealed] = useState<boolean>(false);
 
-  // State Floating Re-do Timer
   const [redoSeconds, setRedoSeconds] = useState<number>(0);
   const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
 
-  // Khôi phục tỷ lệ Split Pane từ localStorage
   useEffect(() => {
     try {
       const savedRatio = Number(
@@ -894,11 +1074,10 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
         setLeftPanePercent(savedRatio);
       }
     } catch {
-      // Bỏ qua nếu trình duyệt chặn localStorage
+      // Bỏ qua
     }
   }, []);
 
-  // Reset trạng thái khi chuyển sang câu hỏi khác
   useEffect(() => {
     setScratchpadText('');
     setIsAnswerRevealed(false);
@@ -906,7 +1085,6 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
     setIsTimerRunning(false);
   }, [item.id]);
 
-  // Bộ đếm giây Floating Re-do Timer
   useEffect(() => {
     if (!isTimerRunning) return;
     const interval = window.setInterval(() => {
@@ -915,7 +1093,6 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
     return () => window.clearInterval(interval);
   }, [isTimerRunning]);
 
-  // Xử lý kéo thanh Resizable Split Pane bằng Pointer Events (60fps)
   const handleStartDragSplit = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
@@ -958,7 +1135,6 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
     }
   }, [leftPanePercent]);
 
-  // Khi gõ vào ô giấy nháp -> Tự động chạy Floating Re-do Timer nếu chưa mở đáp án
   const handleScratchpadChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const nextVal = e.target.value;
@@ -970,7 +1146,6 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
     [isAnswerRevealed, isTimerRunning]
   );
 
-  // Chèn nhanh snippet LaTeX/Markdown vào giấy nháp
   const insertSnippetToScratchpad = useCallback(
     (snippet: string) => {
       setScratchpadText((prev) => (prev ? `${prev} ${snippet}` : snippet));
@@ -981,13 +1156,11 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
     [isAnswerRevealed, isTimerRunning]
   );
 
-  // Bấm "Lật Đáp Án Chuẩn" -> Chốt đồng hồ & Mở khóa vùng đối chiếu + Quick Root Cause Tags
   const handleRevealAnswer = useCallback(() => {
     setIsAnswerRevealed(true);
     setIsTimerRunning(false);
   }, []);
 
-  // Bấm chọn Quick Root Cause Tag -> Đồng bộ trực tiếp vào whyCodes của bản ghi
   const handleToggleQuickRootCauseTag = useCallback(
     (whyCode: string) => {
       const currentCodes = Array.isArray(item.whyCodes) ? item.whyCodes : [];
@@ -1006,7 +1179,12 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
   );
 
   const safeWhyCodes = Array.isArray(item.whyCodes) ? item.whyCodes : [];
-  const safeReferences = Array.isArray(item.references) ? item.references : [];
+  const safeReferences = Array.isArray(item.references)
+    ? item.references.filter(
+        (r) =>
+          !(typeof r?.title === 'string' && r.title.startsWith(SOURCE_REF_PREFIX))
+      )
+    : [];
 
   return (
     <div className="rounded-xl border border-botanical-border bg-botanical-canvas p-3">
@@ -1048,98 +1226,19 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
         ref={splitContainerRef}
         className="flex flex-col lg:flex-row lg:items-stretch"
       >
-        {/* ================= CỘT TRÁI: ĐỀ BÀI & ZOOM PAN PINCH ================= */}
+        {/* ================= CỘT TRÁI: ĐỀ BÀI & ZOOM PAN PINCH MỌI NƠI ================= */}
         <div
           style={{ width: `${leftPanePercent}%` }}
           className="w-full space-y-3 lg:pr-2 max-lg:!w-full"
         >
-          {/* Nội dung văn bản đề bài */}
-          <div className="rounded-lg border border-botanical-border bg-botanical-surface p-3.5">
-            <div className="mb-1.5 flex items-center justify-between border-b border-botanical-border pb-1.5">
-              <span className="font-mono text-[10px] font-bold uppercase text-botanical-sage">
-                ĐỀ BÀI GỐC (SAT / IELTS / TOÁN / LÝ)
-              </span>
-              <span className="font-mono text-[10px] text-botanical-muted">
-                Hộp Leitner {item.leitnerBox}
-              </span>
-            </div>
-            <div className="text-xs leading-relaxed text-botanical-ink">
-              <MathText content={item.questionText} />
-            </div>
-          </div>
-
-          {/* Hình ảnh đề bài tích hợp react-zoom-pan-pinch */}
-          <div className="rounded-lg border border-botanical-border bg-botanical-surface p-2.5">
-            <TransformWrapper
-              initialScale={1}
-              minScale={0.5}
-              maxScale={4}
-              wheel={{ step: 0.15 }}
-              pinch={{ step: 5 }}
-              doubleClick={{ mode: 'zoomIn' }}
-            >
-              {({ zoomIn, zoomOut, resetTransform }) => (
-                <>
-                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-botanical-border pb-1.5">
-                    <span className="font-mono text-[10px] font-bold uppercase text-botanical-muted">
-                      KHUNG SOI ĐỀ BÀI (CUỘN CHUỘT HOẶC KÉO ĐỂ ZOOM)
-                    </span>
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => zoomIn()}
-                        className="inline-flex items-center gap-1 rounded border border-botanical-border bg-botanical-canvas px-2 py-0.5 font-mono text-[10px] font-bold text-botanical-ink hover:border-botanical-sage"
-                        title="Phóng to đề bài"
-                      >
-                        <ZoomIn className="h-3 w-3 text-botanical-sage" /> +
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => zoomOut()}
-                        className="inline-flex items-center gap-1 rounded border border-botanical-border bg-botanical-canvas px-2 py-0.5 font-mono text-[10px] font-bold text-botanical-ink hover:border-botanical-sage"
-                        title="Thu nhỏ đề bài"
-                      >
-                        <ZoomOut className="h-3 w-3 text-botanical-sage" /> -
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => resetTransform()}
-                        className="inline-flex items-center gap-1 rounded border border-botanical-border bg-botanical-canvas px-2 py-0.5 font-mono text-[10px] font-bold text-botanical-ink hover:border-botanical-sage"
-                        title="Đặt lại tỷ lệ 100%"
-                      >
-                        <RotateCcw className="h-3 w-3 text-botanical-terracotta" />{' '}
-                        100%
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="overflow-hidden rounded border border-botanical-border bg-botanical-canvas">
-                    <TransformComponent
-                      wrapperClass="!w-full !max-h-[420px] cursor-grab active:cursor-grabbing"
-                      contentClass="!w-full flex items-center justify-center"
-                    >
-                      {item.problemImageUrl ? (
-                        <img
-                          src={item.problemImageUrl}
-                          alt="Hình ảnh đề bài"
-                          className="max-h-[400px] w-auto object-contain select-none p-2"
-                        />
-                      ) : (
-                        <div className="w-full p-6 text-center">
-                          <p className="mb-2 font-mono text-[11px] font-bold text-botanical-sage">
-                            [Chế độ Phóng To Văn Bản Đề Bài]
-                          </p>
-                          <div className="mx-auto max-w-xl text-left text-sm leading-relaxed text-botanical-ink">
-                            <MathText content={item.questionText} />
-                          </div>
-                        </div>
-                      )}
-                    </TransformComponent>
-                  </div>
-                </>
-              )}
-            </TransformWrapper>
-          </div>
+          <UniversalZoomableProblemView
+            questionText={item.questionText}
+            problemImageUrl={item.problemImageUrl}
+            titleBadge="ĐỀ BÀI CẦN GIẢI LẠI (CUỘN CHUỘT HOẶC BẤM NÚT ĐỂ ZOOM IN / OUT)"
+            onOpenFullscreen={
+              onOpenFullscreenZoom ? () => onOpenFullscreenZoom(item) : undefined
+            }
+          />
         </div>
 
         {/* ================= THANH KÉO RESIZABLE HANDLE Ở GIỮA ================= */}
@@ -1156,13 +1255,12 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
           style={{ width: `${100 - leftPanePercent}%` }}
           className="w-full space-y-3 lg:pl-2 max-lg:!w-full"
         >
-          {/* Khối Giấy Nháp + Floating Re-do Timer góc trên */}
           <div className="rounded-lg border border-botanical-border bg-botanical-surface p-3.5">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-botanical-border pb-2">
               <div className="flex items-center gap-1.5">
                 <FileText className="h-3.5 w-3.5 text-botanical-sage" />
                 <span className="font-mono text-[11px] font-extrabold uppercase text-botanical-ink">
-                  GIẤY NHÁP ACTIVE RECALL (MARKDOWN &amp; LATEX)
+                  GIẤY NHÁP PHỤC THÙ (MARKDOWN &amp; LATEX)
                 </span>
               </div>
 
@@ -1208,7 +1306,7 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
               </div>
             </div>
 
-            {/* Thanh công cụ chèn nhanh Markdown & LaTeX cho Toán/Lý */}
+            {/* Thanh công cụ chèn nhanh Markdown & LaTeX */}
             <div className="mb-2 flex flex-wrap items-center justify-between gap-1.5">
               <div className="flex flex-wrap items-center gap-1">
                 {[
@@ -1239,16 +1337,14 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
               </button>
             </div>
 
-            {/* Textarea Giấy nháp */}
             <textarea
               rows={4}
               value={scratchpadText}
               onChange={handleScratchpadChange}
-              placeholder="Bắt đầu gõ lời giải nháp hoặc lập luận tại đây (Đồng hồ bấm giờ sẽ tự chạy khi bạn gõ)... Hỗ trợ Markdown (**đậm**, - danh sách) và LaTeX ($...$)."
+              placeholder="Tự viết các bước biến đổi, ĐKXĐ hoặc phản xạ NẾU-THÌ của bạn vào đây trước khi bấm Lật Đáp Án (Timer tự chạy khi gõ)..."
               className="w-full rounded-lg border border-botanical-border bg-botanical-canvas p-2.5 font-mono text-xs text-botanical-ink focus:border-botanical-sage focus:outline-none"
             />
 
-            {/* Khung Live Preview Markdown & KaTeX/MathText */}
             {showMarkdownPreview && (
               <div className="mt-2 rounded-lg border border-botanical-border bg-botanical-canvas p-2.5">
                 <span className="mb-1 block font-mono text-[10px] font-bold uppercase text-botanical-muted">
@@ -1263,17 +1359,16 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
           {!isAnswerRevealed ? (
             <div className="rounded-lg border border-botanical-terracotta/50 bg-botanical-terracottaBg/30 p-4 text-center">
               <p className="mb-2.5 text-xs font-medium text-botanical-ink">
-                Đáp án chuẩn và phác đồ sửa sai đang được khóa để đảm bảo{' '}
-                <strong>Active Recall</strong>. Hãy hoàn thành phần nháp phía
-                trên trước khi mở.
+                Đáp án chuẩn và quy tắc NẾU — THÌ đang được giấu để kích hoạt{' '}
+                <strong>Active Recall</strong>.
               </p>
               <button
                 type="button"
                 onClick={handleRevealAnswer}
-                className="inline-flex items-center justify-center gap-2 rounded-lg border border-botanical-sage bg-botanical-sage px-4 py-2 text-xs font-extrabold text-white transition hover:bg-botanical-terracotta hover:border-botanical-terracotta"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-botanical-sage bg-botanical-sage px-4 py-2.5 text-xs font-extrabold text-white transition hover:bg-botanical-terracotta hover:border-botanical-terracotta"
               >
                 <Eye className="h-4 w-4" />
-                Lật Đáp Án Chuẩn &amp; Đối Chiếu Ngay
+                Lật Đáp Án Chuẩn &amp; Đối Chiếu Quy Tắc NẾU — THÌ
               </button>
             </div>
           ) : (
@@ -1296,7 +1391,6 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
                 </div>
               </div>
 
-              {/* So sánh 2 cột: Nháp hiện tại & Lỗi cũ vs Đáp án chuẩn */}
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 <div className="space-y-2 rounded-lg border border-botanical-terracotta/40 bg-botanical-terracottaBg/30 p-2.5 text-xs">
                   <div>
@@ -1336,7 +1430,7 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
                 </div>
               </div>
 
-              {/* QUICK "ROOT CAUSE" TAGS (GẮN NHÃN NGUYÊN NHÂN SAI TỨC THÌ) */}
+              {/* QUICK "ROOT CAUSE" TAGS */}
               <div className="rounded-lg border border-botanical-border bg-botanical-canvas p-2.5">
                 <span className="mb-1.5 block font-mono text-[10px] font-bold uppercase text-botanical-ink">
                   Gắn Nhãn Nhanh Nguyên Nhân Sai (Quick Root Cause Tags):
@@ -1370,7 +1464,6 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
                 </div>
               </div>
 
-              {/* Chấm điểm Leitner trực tiếp sau khi đối chiếu */}
               {onReviewGrade && (
                 <div className="flex flex-wrap items-center justify-between gap-2 border-t border-botanical-border pt-2.5">
                   <span className="text-xs font-semibold text-botanical-ink">
@@ -1396,7 +1489,6 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
                 </div>
               )}
 
-              {/* Nguồn tham chiếu YouTube / Sách nếu có */}
               {safeReferences.length > 0 && (
                 <div className="space-y-1 border-t border-botanical-border pt-2">
                   {safeReferences.map((ref) => (
@@ -1436,25 +1528,42 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
 });
 
 // ============================================================================
-// 3. COMPONENT THẺ BẢN GHI ĐƯỢC MEMO HÓA (TÍCH HỢP ACTIVE RECALL 2 CỘT)
+// 3. COMPONENT THẺ BẢN GHI (CHO PHÉP ĐỔI NHANH CHUYÊN ĐỀ NHỎ & NGUỒN ĐỀ TẠI CHỖ)
 // ============================================================================
 interface MemoizedLogCardProps {
   item: ErrorLogItem;
+  availableTopics: string[];
+  availableSources: string[];
   onOpenForensic: (item: ErrorLogItem) => void;
   onStartEdit: (item: ErrorLogItem) => void;
   onDelete: (id: string) => void;
   onUpdateItem: (updated: ErrorLogItem) => void;
   onReviewGrade: (id: string, rememberedCorrectly: boolean) => void;
+  onOpenFullscreenZoom: (item: ErrorLogItem) => void;
 }
 
 const MemoizedLogCard = memo(function MemoizedLogCard({
   item,
+  availableTopics,
+  availableSources,
   onOpenForensic,
   onStartEdit,
   onDelete,
   onUpdateItem,
   onReviewGrade,
+  onOpenFullscreenZoom,
 }: MemoizedLogCardProps) {
+  const [isQuickMetaOpen, setIsQuickMetaOpen] = useState(false);
+  const [draftTopic, setDraftTopic] = useState(item.topic || '');
+  const [draftSource, setDraftSource] = useState(() =>
+    extractSourceFromItem(item)
+  );
+
+  useEffect(() => {
+    setDraftTopic(item.topic || '');
+    setDraftSource(extractSourceFromItem(item));
+  }, [item]);
+
   const bpTitle =
     PROCESS_BREAKPOINTS.find((b) => b.id === item.processBreakpoint)?.title ||
     item.processBreakpoint;
@@ -1463,10 +1572,24 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
     ? item.twinQuestions.length
     : 0;
   const safeWhyCodes = Array.isArray(item.whyCodes) ? item.whyCodes : [];
+  const currentSource = extractSourceFromItem(item);
 
   const subDef = INITIAL_SUBJECTS.find((s) => s.id === item.subjectId);
   const subjectBadgeClass =
     subDef?.badgeBg || 'bg-botanical-sage text-white';
+
+  const handleSaveQuickMeta = () => {
+    const nextWithSource = attachSourceToItem(
+      {
+        ...item,
+        topic: draftTopic.trim() || item.topic,
+        updatedAt: new Date().toISOString(),
+      },
+      draftSource.trim()
+    );
+    onUpdateItem(nextWithSource);
+    setIsQuickMetaOpen(false);
+  };
 
   return (
     <article
@@ -1481,9 +1604,29 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
           >
             {subDef?.name || item.subjectName}
           </span>
-          <span className="rounded-md border border-botanical-border bg-botanical-chipBg px-2.5 py-0.5 text-xs font-semibold text-botanical-chipText">
-            {item.topic}
-          </span>
+
+          {/* Nút Chuyên đề nhỏ (bấm để tự sửa/đổi nhanh) */}
+          <button
+            type="button"
+            onClick={() => setIsQuickMetaOpen((p) => !p)}
+            title="Bấm để tự gõ hoặc đổi nhanh Chuyên đề nhỏ & Nguồn đề"
+            className="inline-flex items-center gap-1 rounded-md border border-botanical-border bg-botanical-chipBg px-2.5 py-0.5 text-xs font-semibold text-botanical-chipText hover:border-botanical-sage"
+          >
+            <Tag className="h-3 w-3 text-botanical-sage" />
+            <span>{item.topic || 'Chưa gắn chuyên đề'}</span>
+          </button>
+
+          {/* Nhãn Nguồn đề / Bộ đề */}
+          <button
+            type="button"
+            onClick={() => setIsQuickMetaOpen((p) => !p)}
+            title="Bấm để gán hoặc đổi Nguồn đề (gom nhóm câu hỏi cùng nguồn)"
+            className="inline-flex items-center gap-1 rounded border border-botanical-sage/40 bg-botanical-mossMist px-2 py-0.5 font-mono text-[11px] font-bold text-botanical-sage hover:bg-botanical-sage hover:text-white"
+          >
+            <FolderKanban className="h-3 w-3" />
+            <span>{currentSource}</span>
+          </button>
+
           <span className="rounded border border-botanical-border bg-botanical-canvas px-2 py-0.5 text-[11px] font-medium text-botanical-muted">
             {bpTitle}
           </span>
@@ -1504,6 +1647,16 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
         </div>
 
         <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => onOpenFullscreenZoom(item)}
+            className="inline-flex items-center gap-1 rounded-lg border border-botanical-border bg-botanical-canvas px-2.5 py-1 text-xs font-bold text-botanical-sage hover:border-botanical-sage"
+            title="Phóng to toàn màn hình câu hỏi này"
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+            Soi Đề
+          </button>
+
           <button
             type="button"
             onClick={() => onOpenForensic(item)}
@@ -1533,11 +1686,100 @@ const MemoizedLogCard = memo(function MemoizedLogCard({
         </div>
       </div>
 
-      {/* Trạm Active Recall 2 cột tích hợp Zoom, Split-Pane, Timer, Markdown/Math & Quick Tags */}
+      {/* Thanh sửa nhanh Chuyên đề nhỏ & Nguồn đề ngay trên thẻ */}
+      {isQuickMetaOpen && (
+        <div className="mb-3 rounded-lg border border-botanical-sage bg-botanical-mossMist/40 p-3 text-xs">
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block font-mono text-[10px] font-bold uppercase text-botanical-sage">
+                Chuyên đề nhỏ (Tự gõ hoặc chọn nhanh):
+              </label>
+              <input
+                type="text"
+                value={draftTopic}
+                onChange={(e) => setDraftTopic(e.target.value)}
+                placeholder="Nhập tên chuyên đề nhỏ..."
+                className="w-full rounded border border-botanical-border bg-botanical-surface px-2.5 py-1.5 text-xs text-botanical-ink"
+              />
+              {availableTopics.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {availableTopics.map((tp) => (
+                    <button
+                      key={tp}
+                      type="button"
+                      onClick={() => setDraftTopic(tp)}
+                      className={`rounded border px-2 py-0.5 text-[10px] font-semibold ${
+                        draftTopic === tp
+                          ? 'border-botanical-sage bg-botanical-sage text-white'
+                          : 'border-botanical-border bg-botanical-canvas text-botanical-ink'
+                      }`}
+                    >
+                      {tp}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="mb-1 block font-mono text-[10px] font-bold uppercase text-botanical-sage">
+                Nguồn đề / Bộ đề (Để gom nhóm cùng 1 khu):
+              </label>
+              <input
+                type="text"
+                value={
+                  draftSource === DEFAULT_UNGROUPED_SOURCE ? '' : draftSource
+                }
+                onChange={(e) => setDraftSource(e.target.value)}
+                placeholder="VD: Bluebook Test 5, Cam 19 Test 2, Đề Sở HN..."
+                className="w-full rounded border border-botanical-border bg-botanical-surface px-2.5 py-1.5 text-xs text-botanical-ink"
+              />
+              {availableSources.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {availableSources.map((src) => (
+                    <button
+                      key={src}
+                      type="button"
+                      onClick={() => setDraftSource(src)}
+                      className={`rounded border px-2 py-0.5 text-[10px] font-semibold ${
+                        draftSource === src
+                          ? 'border-botanical-terracotta bg-botanical-terracotta text-white'
+                          : 'border-botanical-border bg-botanical-canvas text-botanical-ink'
+                      }`}
+                    >
+                      {src}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-2.5 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setIsQuickMetaOpen(false)}
+              className="rounded border border-botanical-border bg-botanical-canvas px-3 py-1 text-xs font-semibold text-botanical-muted"
+            >
+              Hủy
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveQuickMeta}
+              className="rounded border border-botanical-sage bg-botanical-sage px-3 py-1 text-xs font-bold text-white"
+            >
+              Lưu Chuyên Đề &amp; Nguồn Đề
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Trạm Active Recall 2 cột */}
       <ActiveRecallSplitWorkspace
         item={item}
         onUpdateItem={onUpdateItem}
         onReviewGrade={onReviewGrade}
+        onOpenFullscreenZoom={onOpenFullscreenZoom}
       />
     </article>
   );
@@ -1562,21 +1804,52 @@ export default function OmniErrorLogAppPage() {
   const [editingItem, setEditingItem] = useState<ErrorLogItem | null>(null);
   const [forensicModalItem, setForensicModalItem] =
     useState<ErrorLogItem | null>(null);
+  const [fullscreenZoomItem, setFullscreenZoomItem] =
+    useState<ErrorLogItem | null>(null);
 
-  // Bộ lọc danh sách bản ghi
+  // Bộ lọc danh sách bản ghi & Chế độ Gom nhóm cùng nguồn
   const [subjectFilter, setSubjectFilter] = useState<string>('ALL');
   const [whyFilter, setWhyFilter] = useState<string>('ALL');
+  const [sourceFilter, setSourceFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [groupBySourceMode, setGroupBySourceMode] = useState<boolean>(true);
+  const [collapsedSourceKeys, setCollapsedSourceKeys] = useState<
+    Record<string, boolean>
+  >({});
+
+  // State cho Tab PHỤC THÙ LEITNER (REVIEW) được nâng cấp trực tiếp với Zoom + Split-Pane
+  const [reviewBoxFilter, setReviewBoxFilter] = useState<'DUE' | 1 | 2 | 3 | 4 | 5>('DUE');
+  const [reviewSourceFilter, setReviewSourceFilter] = useState<string>('ALL');
+  const [reviewCursorIdx, setReviewCursorIdx] = useState<number>(0);
+
+  // --- STATE CHUYÊN ĐỀ NHỎ (TỰ GHI / TỰ XOÁ) & NGUỒN ĐỀ ---
+  const [studioSubjectId, setStudioSubjectId] = useState<string>(
+    INITIAL_SUBJECTS[0]?.id || 'SAT_RW'
+  );
+  const [customTopicsBySubject, setCustomTopicsBySubject] = useState<
+    Record<string, string[]>
+  >({});
+  const [deletedDefaultTopics, setDeletedDefaultTopics] = useState<
+    Record<string, string[]>
+  >({});
+  const [newTopicInput, setNewTopicInput] = useState<string>('');
+  const [activePreselectedTopic, setActivePreselectedTopic] =
+    useState<string>('');
+
+  const [customSourcesList, setCustomSourcesList] = useState<string[]>([]);
+  const [newSourceInput, setNewSourceInput] = useState<string>('');
+  const [activePreselectedSource, setActivePreselectedSource] =
+    useState<string>('');
 
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const deferredSubjectFilter = useDeferredValue(subjectFilter);
   const deferredWhyFilter = useDeferredValue(whyFilter);
+  const deferredSourceFilter = useDeferredValue(sourceFilter);
 
-  // Cấu hình nhanh Gemini API Key trên giao diện
   const [customApiKey, setCustomApiKey] = useState<string>('');
   const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false);
 
-  // --- STATE ĐỒNG BỘ TRỰC TIẾP (SQLITE + SUPABASE CLOUD + MULTI-TAB) ---
+  // --- STATE ĐỒNG BỘ TRỰC TIẾP ---
   const [syncStatus, setSyncStatus] = useState<LiveSyncStatus>('LIVE_LOCAL');
   const [lastSyncedAt, setLastSyncedAt] = useState<string>('');
   const [syncLatencyMs, setSyncLatencyMs] = useState<number | null>(null);
@@ -1595,7 +1868,168 @@ export default function OmniErrorLogAppPage() {
     HTMLInputElement | HTMLTextAreaElement | null
   >(null);
 
-  // Hàm đồng bộ nhất quán cả danh sách `logs` lẫn `analytics` trên toàn ứng dụng
+  // Khởi tạo danh sách Chuyên đề nhỏ (Tự ghi / Tự xoá) và Nguồn đề từ localStorage
+  useEffect(() => {
+    try {
+      const rawTopics = window.localStorage.getItem(LOCAL_CUSTOM_TOPICS_KEY);
+      if (rawTopics) {
+        const parsed = JSON.parse(rawTopics);
+        if (parsed?.custom) setCustomTopicsBySubject(parsed.custom);
+        if (parsed?.deletedDefaults)
+          setDeletedDefaultTopics(parsed.deletedDefaults);
+      }
+      const rawSources = window.localStorage.getItem(LOCAL_CUSTOM_SOURCES_KEY);
+      if (rawSources) {
+        const parsedSources = JSON.parse(rawSources);
+        if (Array.isArray(parsedSources)) setCustomSourcesList(parsedSources);
+      }
+    } catch {
+      // Bỏ qua
+    }
+  }, []);
+
+  const persistTopicsState = useCallback(
+    (
+      nextCustom: Record<string, string[]>,
+      nextDeletedDefaults: Record<string, string[]>
+    ) => {
+      setCustomTopicsBySubject(nextCustom);
+      setDeletedDefaultTopics(nextDeletedDefaults);
+      try {
+        window.localStorage.setItem(
+          LOCAL_CUSTOM_TOPICS_KEY,
+          JSON.stringify({
+            custom: nextCustom,
+            deletedDefaults: nextDeletedDefaults,
+          })
+        );
+      } catch {
+        // Bỏ qua
+      }
+    },
+    []
+  );
+
+  const persistSourcesState = useCallback((nextSources: string[]) => {
+    setCustomSourcesList(nextSources);
+    try {
+      window.localStorage.setItem(
+        LOCAL_CUSTOM_SOURCES_KEY,
+        JSON.stringify(nextSources)
+      );
+    } catch {
+      // Bỏ qua
+    }
+  }, []);
+
+  // Tổng hợp các chuyên đề nhỏ của 1 môn (Gồm mặc định chưa bị xoá + Tự ghi + Đã có trong logs)
+  const getTopicsForSubject = useCallback(
+    (subId: string): string[] => {
+      const subDef = INITIAL_SUBJECTS.find((s) => s.id === subId) as any;
+      const defaultTopics: string[] = Array.isArray(subDef?.topics)
+        ? subDef.topics
+        : Array.isArray(subDef?.subTopics)
+          ? subDef.subTopics
+          : [];
+      const deletedSet = new Set(deletedDefaultTopics[subId] || []);
+      const customList = customTopicsBySubject[subId] || [];
+      const fromLogs = logs
+        .filter((l) => l.subjectId === subId && l.topic?.trim())
+        .map((l) => l.topic.trim())
+        .filter((t) => !deletedSet.has(t));
+
+      return Array.from(
+        new Set([
+          ...customList,
+          ...defaultTopics.filter((t) => !deletedSet.has(t)),
+          ...fromLogs,
+        ])
+      );
+    },
+    [customTopicsBySubject, deletedDefaultTopics, logs]
+  );
+
+  // Tổng hợp tất cả các Nguồn đề hiện có
+  const allAvailableSources = useMemo(() => {
+    const fromLogs = logs
+      .map((l) => extractSourceFromItem(l))
+      .filter((s) => s && s !== DEFAULT_UNGROUPED_SOURCE);
+    return Array.from(new Set([...customSourcesList, ...fromLogs]));
+  }, [customSourcesList, logs]);
+
+  // Thêm chuyên đề nhỏ mới (Tự ghi)
+  const handleAddCustomTopic = useCallback(() => {
+    const trimmed = newTopicInput.trim();
+    if (!trimmed) return;
+    const currentCustom = customTopicsBySubject[studioSubjectId] || [];
+    const nextCustom = {
+      ...customTopicsBySubject,
+      [studioSubjectId]: Array.from(new Set([trimmed, ...currentCustom])),
+    };
+    const currentDeleted = deletedDefaultTopics[studioSubjectId] || [];
+    const nextDeleted = {
+      ...deletedDefaultTopics,
+      [studioSubjectId]: currentDeleted.filter((t) => t !== trimmed),
+    };
+    persistTopicsState(nextCustom, nextDeleted);
+    setActivePreselectedTopic(trimmed);
+    setNewTopicInput('');
+  }, [
+    customTopicsBySubject,
+    deletedDefaultTopics,
+    newTopicInput,
+    persistTopicsState,
+    studioSubjectId,
+  ]);
+
+  // Xoá chuyên đề nhỏ (Tự xoá được cả chuyên đề tự thêm lẫn chuyên đề mặc định)
+  const handleDeleteTopic = useCallback(
+    (subId: string, topicToRemove: string) => {
+      const currentCustom = customTopicsBySubject[subId] || [];
+      const nextCustom = {
+        ...customTopicsBySubject,
+        [subId]: currentCustom.filter((t) => t !== topicToRemove),
+      };
+      const currentDeleted = deletedDefaultTopics[subId] || [];
+      const nextDeleted = {
+        ...deletedDefaultTopics,
+        [subId]: Array.from(new Set([...currentDeleted, topicToRemove])),
+      };
+      persistTopicsState(nextCustom, nextDeleted);
+      if (activePreselectedTopic === topicToRemove) {
+        setActivePreselectedTopic('');
+      }
+    },
+    [
+      activePreselectedTopic,
+      customTopicsBySubject,
+      deletedDefaultTopics,
+      persistTopicsState,
+    ]
+  );
+
+  // Thêm Nguồn đề mới
+  const handleAddCustomSource = useCallback(() => {
+    const trimmed = newSourceInput.trim();
+    if (!trimmed) return;
+    const next = Array.from(new Set([trimmed, ...customSourcesList]));
+    persistSourcesState(next);
+    setActivePreselectedSource(trimmed);
+    setNewSourceInput('');
+  }, [customSourcesList, newSourceInput, persistSourcesState]);
+
+  // Xoá Nguồn đề khỏi danh sách gợi ý nhanh
+  const handleDeleteCustomSource = useCallback(
+    (sourceToRemove: string) => {
+      const next = customSourcesList.filter((s) => s !== sourceToRemove);
+      persistSourcesState(next);
+      if (activePreselectedSource === sourceToRemove) {
+        setActivePreselectedSource('');
+      }
+    },
+    [activePreselectedSource, customSourcesList, persistSourcesState]
+  );
+
   const applyLogsAndAnalytics = useCallback(
     (
       rawNextLogs: ErrorLogItem[],
@@ -1624,7 +2058,7 @@ export default function OmniErrorLogAppPage() {
           })
         );
       } catch {
-        // Bỏ qua nếu bộ nhớ trình duyệt đầy
+        // Bỏ qua
       }
 
       if (shouldBroadcast && broadcastChannelRef.current) {
@@ -1703,7 +2137,7 @@ export default function OmniErrorLogAppPage() {
         setPendingOutboxCount(0);
       }
     } catch {
-      // Giữ nguyên hàng đợi nếu lỗi parse
+      // Giữ nguyên
     }
   }, []);
 
@@ -1829,7 +2263,6 @@ export default function OmniErrorLogAppPage() {
     [applyLogsAndAnalytics, flushOfflineOutbox, pendingOutboxCount]
   );
 
-  // Hydrate tức thì từ LocalStorage khi F5 (0ms) trước khi đồng bộ ngầm với Cloud
   useEffect(() => {
     try {
       const cached = window.localStorage.getItem(LOCAL_CACHE_KEY);
@@ -1845,7 +2278,7 @@ export default function OmniErrorLogAppPage() {
         }
       }
     } catch {
-      // Bỏ qua lỗi đọc cache
+      // Bỏ qua
     }
 
     void fetchAllData(false);
@@ -2101,6 +2534,7 @@ export default function OmniErrorLogAppPage() {
     [virtualShift, vnImeMode]
   );
 
+  // Lọc danh sách bản ghi
   const filteredLogs = useMemo(() => {
     const q = deferredSearchQuery.trim().toLowerCase();
     return logs.filter((item) => {
@@ -2116,15 +2550,83 @@ export default function OmniErrorLogAppPage() {
       ) {
         return false;
       }
+      if (
+        deferredSourceFilter !== 'ALL' &&
+        extractSourceFromItem(item) !== deferredSourceFilter
+      ) {
+        return false;
+      }
       if (q) {
-        const hay = `${item.subjectName} ${item.topic} ${item.questionText} ${item.myWrongStep} ${item.ifTrigger} ${item.thenAction}`.toLowerCase();
+        const src = extractSourceFromItem(item);
+        const hay = `${item.subjectName} ${item.topic} ${src} ${item.questionText} ${item.myWrongStep} ${item.ifTrigger} ${item.thenAction}`.toLowerCase();
         return hay.includes(q);
       }
       return true;
     });
-  }, [logs, deferredSubjectFilter, deferredWhyFilter, deferredSearchQuery]);
+  }, [
+    logs,
+    deferredSubjectFilter,
+    deferredWhyFilter,
+    deferredSourceFilter,
+    deferredSearchQuery,
+  ]);
 
-  // Dùng logsRef để giữ nguyên reference của các hàm callback -> Bảo toàn React.memo
+  // Gom các câu hỏi cùng Nguồn đề thành từng Khu vực (Source Clusters)
+  const groupedBySourceClusters = useMemo(() => {
+    const map = new Map<string, ErrorLogItem[]>();
+    filteredLogs.forEach((item) => {
+      const src = extractSourceFromItem(item);
+      const existing = map.get(src);
+      if (existing) {
+        existing.push(item);
+      } else {
+        map.set(src, [item]);
+      }
+    });
+    return Array.from(map.entries()).map(([sourceName, items]) => {
+      const carelessCount = items.filter((it) =>
+        (it.whyCodes || []).some((c) => String(c).startsWith('A'))
+      ).length;
+      const carelessPercent =
+        items.length > 0 ? Math.round((carelessCount / items.length) * 100) : 0;
+      return {
+        sourceName,
+        items,
+        carelessPercent,
+      };
+    });
+  }, [filteredLogs]);
+
+  // Lọc danh sách câu hỏi trong Tab PHỤC THÙ LEITNER (REVIEW)
+  const reviewFilteredList = useMemo(() => {
+    const todayLocal = getLocalTodayDateString();
+    const todayIso = new Date().toISOString().slice(0, 10);
+
+    return logs.filter((it) => {
+      if (
+        reviewSourceFilter !== 'ALL' &&
+        extractSourceFromItem(it) !== reviewSourceFilter
+      ) {
+        return false;
+      }
+      if (reviewBoxFilter === 'DUE') {
+        if ((it.leitnerBox ?? 1) >= 5 && it.isResolved) return false;
+        if (!it.nextReviewDate) return true;
+        return it.nextReviewDate <= todayLocal || it.nextReviewDate <= todayIso;
+      }
+      return (it.leitnerBox ?? 1) === reviewBoxFilter;
+    });
+  }, [logs, reviewBoxFilter, reviewSourceFilter]);
+
+  const leitnerBoxCounts = useMemo(() => {
+    const counts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    logs.forEach((it) => {
+      const b = Math.min(5, Math.max(1, Number(it.leitnerBox || 1)));
+      counts[b] = (counts[b] || 0) + 1;
+    });
+    return counts;
+  }, [logs]);
+
   const handleUpdateLogItem = useCallback(
     async (rawUpdated: ErrorLogItem) => {
       const updated = sanitizeLogItem(rawUpdated);
@@ -2270,8 +2772,19 @@ export default function OmniErrorLogAppPage() {
 
   const handleStartEditCard = useCallback((item: ErrorLogItem) => {
     setEditingItem(sanitizeLogItem(item));
+    setActivePreselectedTopic(item.topic || '');
+    const src = extractSourceFromItem(item);
+    setActivePreselectedSource(src === DEFAULT_UNGROUPED_SOURCE ? '' : src);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
+
+  const currentReviewItem =
+    reviewFilteredList[
+      Math.min(
+        reviewCursorIdx,
+        Math.max(0, reviewFilteredList.length - 1)
+      )
+    ] || null;
 
   return (
     <div className="min-h-screen bg-botanical-canvas text-botanical-ink">
@@ -2352,7 +2865,7 @@ export default function OmniErrorLogAppPage() {
             </button>
           </nav>
 
-          {/* Đồng hồ Realtime, Nút Đồng bộ Trực tiếp, Bộ gõ Tiếng Việt dự phòng, Cmd+K, Xuất Anki & Cài đặt AI Key */}
+          {/* Cụm công cụ Realtime, Sync, Bộ gõ Tiếng Việt, Cmd+K */}
           <div className="flex flex-wrap items-center gap-1.5">
             <RealtimeClockBadge />
 
@@ -2360,11 +2873,6 @@ export default function OmniErrorLogAppPage() {
               <button
                 type="button"
                 onClick={() => void fetchAllData(false)}
-                title={
-                  lastSyncedAt
-                    ? `Đồng bộ trực tiếp lần cuối lúc ${lastSyncedAt} (${syncLatencyMs ?? 0}ms). Bấm để đồng bộ ngay.`
-                    : 'Bấm để đồng bộ dữ liệu trực tiếp'
-                }
                 className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-semibold text-botanical-ink hover:bg-botanical-mossMist"
               >
                 {syncStatus === 'SYNCING' ? (
@@ -2395,7 +2903,6 @@ export default function OmniErrorLogAppPage() {
                     ? 'bg-botanical-sage text-white'
                     : 'text-botanical-muted hover:text-botanical-ink'
                 }`}
-                title="Bật/Tắt tự động đồng bộ thời gian thực giữa các Tab, SQLite & Supabase"
               >
                 {autoLiveSync ? 'AUTO' : 'MANUAL'}
               </button>
@@ -2416,7 +2923,6 @@ export default function OmniErrorLogAppPage() {
                     return next;
                   });
                 }}
-                title="Bộ gõ Tiếng Việt nội bộ dự phòng khi bộ gõ hệ điều hành bị lỗi (Phím tắt: Ctrl+Shift+V)"
                 className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-bold transition ${
                   vnImeMode !== 'OFF'
                     ? 'bg-botanical-terracotta text-white'
@@ -2434,7 +2940,6 @@ export default function OmniErrorLogAppPage() {
               <button
                 type="button"
                 onClick={() => setShowVirtualKeyboard((prev) => !prev)}
-                title="Mở/Đóng Bàn phím ảo Tiếng Việt trên màn hình"
                 className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-bold transition ${
                   showVirtualKeyboard
                     ? 'bg-botanical-sage text-white'
@@ -2461,7 +2966,6 @@ export default function OmniErrorLogAppPage() {
               type="button"
               onClick={() => exportLogsToAnkiCsv(logs)}
               className="inline-flex items-center gap-1 rounded-lg border border-botanical-border bg-botanical-canvas px-2.5 py-1.5 text-xs font-semibold text-botanical-sage hover:border-botanical-sage"
-              title="Xuất toàn bộ ra file Anki CSV"
             >
               <Download className="h-3.5 w-3.5" /> Anki .CSV
             </button>
@@ -2470,19 +2974,17 @@ export default function OmniErrorLogAppPage() {
               type="button"
               onClick={() => setShowApiKeyModal((p) => !p)}
               className="inline-flex items-center gap-1 rounded-lg border border-botanical-border bg-botanical-canvas px-2.5 py-1.5 text-xs font-medium text-botanical-muted hover:text-botanical-ink"
-              title="Cấu hình Gemini API Key"
             >
               <KeyRound className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
 
-        {/* Thanh nhập nhanh API Key nếu người dùng mở */}
         {showApiKeyModal && (
           <div className="border-t border-botanical-border bg-botanical-mossMist px-6 py-2.5">
             <div className="mx-auto flex max-w-4xl items-center gap-3 text-xs">
               <span className="font-semibold text-botanical-sage">
-                Gemini API Key (Tùy chọn — Mặc định đã tích hợp sẵn trong .env.local):
+                Gemini API Key (Tùy chọn):
               </span>
               <input
                 type="password"
@@ -2510,16 +3012,247 @@ export default function OmniErrorLogAppPage() {
       </header>
 
       {/* KHU VỰC LÀM VIỆC CHÍNH */}
-      <main className="mx-auto max-w-[1440px] space-y-8 px-4 py-6 sm:px-6">
+      <main className="mx-auto max-w-[1440px] space-y-6 px-4 py-6 sm:px-6">
         {activeTab === 'WORKSTATION' && (
           <>
+            {/* 0. TRẠM QUẢN LÝ CHUYÊN ĐỀ NHỎ (TỰ GHI / TỰ XOÁ) & NGUỒN ĐỀ (GOM NHÓM CÙNG KHU) */}
+            <section className="rounded-xl border border-botanical-border bg-botanical-surface p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-botanical-border pb-2.5">
+                <div className="flex items-center gap-2">
+                  <Tag className="h-4 w-4 text-botanical-sage" />
+                  <h2 className="text-xs font-extrabold uppercase tracking-tight text-botanical-ink">
+                    TRẠM TÙY BIẾN CHUYÊN ĐỀ NHỎ (TỰ GHI / TỰ XOÁ) &amp; NGUỒN ĐỀ
+                  </h2>
+                </div>
+                <span className="text-[11px] text-botanical-muted">
+                  Chuyên đề và Nguồn đề đang chọn bên dưới sẽ tự động gắn vào câu hỏi khi bạn bấm Lưu trong Sổ Tay.
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+                {/* Cột trái: Quản lý Chuyên đề nhỏ tự ghi / tự xoá theo từng môn */}
+                <div className="space-y-2.5 rounded-lg border border-botanical-border bg-botanical-canvas p-3 lg:col-span-7">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-mono text-[11px] font-bold uppercase text-botanical-sage">
+                      1. Quản lý Chuyên đề nhỏ theo môn (Bấm × để xoá):
+                    </span>
+                    <select
+                      value={studioSubjectId}
+                      onChange={(e) => setStudioSubjectId(e.target.value)}
+                      className="rounded border border-botanical-border bg-botanical-surface px-2.5 py-1 text-xs font-bold text-botanical-ink"
+                    >
+                      {INITIAL_SUBJECTS.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Ô tự gõ thêm chuyên đề nhỏ mới */}
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={newTopicInput}
+                      onChange={(e) => setNewTopicInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddCustomTopic();
+                        }
+                      }}
+                      placeholder="Tự gõ tên chuyên đề nhỏ mới (VD: Dao động cơ, Command of Evidence, Hàm hợp)..."
+                      className="flex-1 rounded-lg border border-botanical-border bg-botanical-surface px-3 py-1.5 text-xs text-botanical-ink focus:border-botanical-sage focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddCustomTopic}
+                      className="inline-flex items-center gap-1 rounded-lg border border-botanical-sage bg-botanical-sage px-3 py-1.5 text-xs font-bold text-white hover:bg-botanical-terracotta hover:border-botanical-terracotta"
+                    >
+                      <Plus className="h-3.5 w-3.5" /> Thêm chuyên đề
+                    </button>
+                  </div>
+
+                  {/* Danh sách các chip chuyên đề nhỏ (Cho phép bấm chọn hoặc bấm × để xoá) */}
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {getTopicsForSubject(studioSubjectId).map((tp) => {
+                      const isSelected = activePreselectedTopic === tp;
+                      return (
+                        <div
+                          key={tp}
+                          className={`inline-flex items-center rounded-md border text-xs font-semibold transition ${
+                            isSelected
+                              ? 'border-botanical-sage bg-botanical-sage text-white'
+                              : 'border-botanical-border bg-botanical-surface text-botanical-ink'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setActivePreselectedTopic((prev) =>
+                                prev === tp ? '' : tp
+                              )
+                            }
+                            className="px-2.5 py-1"
+                            title="Bấm để chọn gắn chuyên đề này vào câu hỏi"
+                          >
+                            {tp}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleDeleteTopic(studioSubjectId, tp)
+                            }
+                            title={`Xoá chuyên đề "${tp}"`}
+                            className={`border-l px-1.5 py-1 hover:text-botanical-terracotta ${
+                              isSelected
+                                ? 'border-white/30 text-white'
+                                : 'border-botanical-border text-botanical-muted'
+                            }`}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Cột phải: Quản lý Nguồn đề / Bộ đề (Để ghép các câu cùng nguồn thành 1 khu) */}
+                <div className="space-y-2.5 rounded-lg border border-botanical-border bg-botanical-canvas p-3 lg:col-span-5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-[11px] font-bold uppercase text-botanical-terracotta">
+                      2. Nguồn đề / Bộ đề (Ghép câu cùng nguồn thành 1 khu):
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={newSourceInput}
+                      onChange={(e) => setNewSourceInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddCustomSource();
+                        }
+                      }}
+                      placeholder="VD: Bluebook Test 5, Cam 19 Test 2, Đề Sở HN..."
+                      className="flex-1 rounded-lg border border-botanical-border bg-botanical-surface px-3 py-1.5 text-xs text-botanical-ink focus:border-botanical-sage focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddCustomSource}
+                      className="inline-flex items-center gap-1 rounded-lg border border-botanical-terracotta bg-botanical-terracotta px-3 py-1.5 text-xs font-bold text-white"
+                    >
+                      <Plus className="h-3.5 w-3.5" /> Tạo Nguồn
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {allAvailableSources.length === 0 ? (
+                      <span className="text-[11px] italic text-botanical-muted">
+                        Chưa có nguồn đề nào. Hãy gõ tên đề (VD: Bluebook Test 5) để tự động gom các câu hỏi cùng đề vào 1 khu!
+                      </span>
+                    ) : (
+                      allAvailableSources.map((src) => {
+                        const isSelected = activePreselectedSource === src;
+                        return (
+                          <div
+                            key={src}
+                            className={`inline-flex items-center rounded-md border text-xs font-semibold transition ${
+                              isSelected
+                                ? 'border-botanical-terracotta bg-botanical-terracotta text-white'
+                                : 'border-botanical-border bg-botanical-surface text-botanical-ink'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setActivePreselectedSource((prev) =>
+                                  prev === src ? '' : src
+                                )
+                              }
+                              className="px-2.5 py-1"
+                            >
+                              📚 {src}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteCustomSource(src)}
+                              title={`Xoá nguồn "${src}" khỏi thanh chọn nhanh`}
+                              className={`border-l px-1.5 py-1 ${
+                                isSelected
+                                  ? 'border-white/30 text-white'
+                                  : 'border-botanical-border text-botanical-muted hover:text-botanical-terracotta'
+                              }`}
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Thanh trạng thái gắn tự động vào Form */}
+              {(activePreselectedTopic || activePreselectedSource) && (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-botanical-sage bg-botanical-mossMist px-3 py-1.5 text-xs">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="font-bold text-botanical-sage">
+                      Đang ghim cho câu hỏi sắp lưu:
+                    </span>
+                    {activePreselectedTopic && (
+                      <span className="rounded border border-botanical-sage bg-botanical-surface px-2 py-0.5 font-bold text-botanical-ink">
+                        Chuyên đề: {activePreselectedTopic}
+                      </span>
+                    )}
+                    {activePreselectedSource && (
+                      <span className="rounded border border-botanical-terracotta bg-botanical-surface px-2 py-0.5 font-bold text-botanical-terracotta">
+                        Nguồn đề: {activePreselectedSource}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActivePreselectedTopic('');
+                      setActivePreselectedSource('');
+                    }}
+                    className="text-[11px] font-bold text-botanical-terracotta hover:underline"
+                  >
+                    Bỏ ghim
+                  </button>
+                </div>
+              )}
+            </section>
+
             {/* 1. Form Nhập Lỗi 3 Cột WHAT - WHY - HOW */}
             <ErrorEntryForm
               editingItem={editingItem}
               customApiKey={customApiKey}
               onCancelEdit={() => setEditingItem(null)}
               onSaveSuccess={async (rawSavedItem, openTwinModal) => {
-                const savedItem = sanitizeLogItem(rawSavedItem);
+                let savedItem = sanitizeLogItem(rawSavedItem);
+
+                // Nếu người dùng đã chọn/gõ Chuyên đề nhỏ tùy chỉnh trên thanh Studio, ưu tiên ghi đè
+                if (activePreselectedTopic.trim()) {
+                  savedItem = {
+                    ...savedItem,
+                    topic: activePreselectedTopic.trim(),
+                  };
+                }
+
+                // Nếu người dùng đã chọn/gõ Nguồn đề trên thanh Studio, gắn Nguồn đề vào bản ghi
+                if (activePreselectedSource.trim()) {
+                  savedItem = attachSourceToItem(
+                    savedItem,
+                    activePreselectedSource.trim()
+                  );
+                }
+
                 setEditingItem(null);
                 const nextLogs = [
                   savedItem,
@@ -2536,7 +3269,7 @@ export default function OmniErrorLogAppPage() {
               }}
             />
 
-            {/* 2. Kho Lưu Trữ Sổ Tay Lỗi Sai Đa Môn Học (Active Recall 2 Cột) */}
+            {/* 2. Kho Lưu Trữ Sổ Tay Lỗi Sai (Hỗ trợ Gom Các Câu Hỏi Cùng Nguồn Thành 1 Khu) */}
             <section className="space-y-4 pt-2">
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-botanical-border bg-botanical-surface px-4 py-3">
                 <div>
@@ -2544,25 +3277,60 @@ export default function OmniErrorLogAppPage() {
                     TRẠM GIẢI LẠI ACTIVE RECALL &amp; KHO LỖI SAI ({filteredLogs.length} bản ghi)
                   </h3>
                   <p className="text-xs text-botanical-muted">
-                    Đáp án chuẩn được giấu mặc định. Hãy cuộn chuột để{' '}
-                    <strong>Zoom đề bài bên trái</strong>, gõ nháp kèm{' '}
-                    <strong>Đồng hồ bấm giờ bên phải</strong> rồi bấm{' '}
-                    <strong>&ldquo;Lật Đáp Án Chuẩn&rdquo;</strong>.
+                    Các câu hỏi cùng nguồn đề được gom thành từng khu vực riêng. Bấm vào tên{' '}
+                    <strong>Chuyên đề</strong> hoặc <strong>Nguồn đề</strong> trên thẻ để sửa nhanh.
                   </p>
                 </div>
 
-                {/* Bộ lọc Tìm kiếm, Môn học & Mã lỗi WHY */}
+                {/* Bộ lọc Tìm kiếm, Chế độ Gom Nhóm Theo Nguồn, Môn học & Mã lỗi WHY */}
                 <div className="flex flex-wrap items-center gap-2">
+                  {/* Nút bật/tắt Gom nhóm các câu cùng nguồn thành 1 khu */}
+                  <button
+                    type="button"
+                    onClick={() => setGroupBySourceMode((prev) => !prev)}
+                    className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-bold transition ${
+                      groupBySourceMode
+                        ? 'border-botanical-sage bg-botanical-sage text-white'
+                        : 'border-botanical-border bg-botanical-canvas text-botanical-ink'
+                    }`}
+                  >
+                    {groupBySourceMode ? (
+                      <>
+                        <Layers className="h-3.5 w-3.5" /> Đang gom theo Khu Vực Nguồn Đề
+                      </>
+                    ) : (
+                      <>
+                        <List className="h-3.5 w-3.5" /> Hiển thị Danh sách phẳng
+                      </>
+                    )}
+                  </button>
+
                   <div className="relative">
                     <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-botanical-muted" />
                     <input
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Tìm đề bài, quy tắc NẾU-THÌ..."
+                      placeholder="Tìm đề bài, nguồn đề, NẾU-THÌ..."
                       className="rounded-lg border border-botanical-border bg-botanical-canvas py-1.5 pl-8 pr-3 text-xs text-botanical-ink focus:border-botanical-sage focus:outline-none"
                     />
                   </div>
+
+                  <select
+                    value={sourceFilter}
+                    onChange={(e) => setSourceFilter(e.target.value)}
+                    className="rounded-lg border border-botanical-border bg-botanical-canvas px-2.5 py-1.5 text-xs font-medium text-botanical-ink"
+                  >
+                    <option value="ALL">Tất cả Nguồn đề</option>
+                    {allAvailableSources.map((src) => (
+                      <option key={src} value={src}>
+                        📚 {src}
+                      </option>
+                    ))}
+                    <option value={DEFAULT_UNGROUPED_SOURCE}>
+                      {DEFAULT_UNGROUPED_SOURCE}
+                    </option>
+                  </select>
 
                   <select
                     value={subjectFilter}
@@ -2600,17 +3368,104 @@ export default function OmniErrorLogAppPage() {
                 <div className="botanical-paper-card rounded-xl border border-botanical-border bg-botanical-surface p-8 text-center text-xs text-botanical-muted">
                   Không có bản ghi nào khớp với bộ lọc hiện tại.
                 </div>
+              ) : groupBySourceMode ? (
+                /* CHẾ ĐỘ GOM CÁC CÂU HỎI CÙNG NGUỒN THÀNH 1 KHU VỰC */
+                <div className="space-y-6">
+                  {groupedBySourceClusters.map((cluster) => {
+                    const isCollapsed = Boolean(
+                      collapsedSourceKeys[cluster.sourceName]
+                    );
+                    return (
+                      <div
+                        key={cluster.sourceName}
+                        className="rounded-xl border-2 border-botanical-sage/40 bg-botanical-mossMist/25 p-4"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-botanical-border pb-3">
+                          <div className="flex flex-wrap items-center gap-2.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setCollapsedSourceKeys((prev) => ({
+                                  ...prev,
+                                  [cluster.sourceName]: !prev[cluster.sourceName],
+                                }))
+                              }
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-botanical-sage bg-botanical-sage px-3 py-1 text-xs font-extrabold text-white"
+                            >
+                              {isCollapsed ? (
+                                <ChevronRight className="h-4 w-4" />
+                              ) : (
+                                <ChevronDown className="h-4 w-4" />
+                              )}
+                              <FolderKanban className="h-3.5 w-3.5" />
+                              <span>KHU VỰC NGUỒN ĐỀ: {cluster.sourceName}</span>
+                            </button>
+
+                            <span className="rounded border border-botanical-border bg-botanical-surface px-2.5 py-1 font-mono text-xs font-bold text-botanical-ink">
+                              {cluster.items.length} câu hỏi trong nguồn này
+                            </span>
+
+                            <span className="rounded border border-botanical-terracotta/40 bg-botanical-terracottaBg px-2.5 py-1 font-mono text-xs font-bold text-botanical-terracotta">
+                              Thuế Ẩu khu này: {cluster.carelessPercent}%
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReviewSourceFilter(cluster.sourceName);
+                                setReviewBoxFilter('DUE');
+                                setReviewCursorIdx(0);
+                                setActiveTab('REVIEW');
+                              }}
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-botanical-terracotta bg-botanical-terracotta px-3 py-1 text-xs font-bold text-white hover:bg-botanical-sage hover:border-botanical-sage"
+                            >
+                              <Flame className="h-3.5 w-3.5" />
+                              Ôn Phục Thù Cả Khu Này ({cluster.items.length} câu)
+                            </button>
+                          </div>
+                        </div>
+
+                        {!isCollapsed && (
+                          <div className="mt-4 space-y-4">
+                            {cluster.items.map((item) => (
+                              <MemoizedLogCard
+                                key={item.id}
+                                item={item}
+                                availableTopics={getTopicsForSubject(
+                                  item.subjectId
+                                )}
+                                availableSources={allAvailableSources}
+                                onOpenForensic={setForensicModalItem}
+                                onStartEdit={handleStartEditCard}
+                                onDelete={handleDeleteLog}
+                                onUpdateItem={handleUpdateLogItem}
+                                onReviewGrade={handleReviewGrade}
+                                onOpenFullscreenZoom={setFullscreenZoomItem}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               ) : (
+                /* CHẾ ĐỘ DANH SÁCH PHẲNG */
                 <div className="space-y-4">
                   {filteredLogs.map((item) => (
                     <MemoizedLogCard
                       key={item.id}
                       item={item}
+                      availableTopics={getTopicsForSubject(item.subjectId)}
+                      availableSources={allAvailableSources}
                       onOpenForensic={setForensicModalItem}
                       onStartEdit={handleStartEditCard}
                       onDelete={handleDeleteLog}
                       onUpdateItem={handleUpdateLogItem}
                       onReviewGrade={handleReviewGrade}
+                      onOpenFullscreenZoom={setFullscreenZoomItem}
                     />
                   ))}
                 </div>
@@ -2629,12 +3484,156 @@ export default function OmniErrorLogAppPage() {
           />
         )}
 
+        {/* TAB PHỤC THÙ LEITNER ĐƯỢC NÂNG CẤP TRỰC TIẾP VỚI ZOOM IN/OUT MỌI NƠI + SPLIT-PANE */}
         {activeTab === 'REVIEW' && (
-          <RedemptionReview
-            logs={logs}
-            mode="REVIEW"
-            onReviewGrade={handleReviewGrade}
-          />
+          <section className="space-y-4">
+            {/* Banner điều khiển 5 Hộp Leitner + Lọc theo Khu vực Nguồn đề */}
+            <div className="rounded-xl border border-botanical-border bg-botanical-surface p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <span className="inline-flex items-center gap-1 rounded bg-botanical-terracottaBg px-2 py-0.5 font-mono text-[10px] font-bold uppercase text-botanical-terracotta">
+                    <Flame className="h-3 w-3" /> REDEMPTION REVIEW MODE (SPACED REPETITION + ZOOM SPLIT-PANE)
+                  </span>
+                  <h2 className="mt-1 text-base font-extrabold text-botanical-ink">
+                    Chế độ &ldquo;Phục Thù&rdquo; theo Thuật toán 5 Hộp Leitner (1 - 3 - 7 - 14 - 30 ngày)
+                  </h2>
+                  <p className="text-xs text-botanical-muted">
+                    Hỗ trợ <strong>Zoom In / Zoom Out đề bài trực tiếp</strong>, kéo thanh chia cột và đồng hồ bấm giờ tự động.
+                  </p>
+                </div>
+
+                {/* Các nút lọc Hộp Leitner & Nguồn đề */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <select
+                    value={reviewSourceFilter}
+                    onChange={(e) => {
+                      setReviewSourceFilter(e.target.value);
+                      setReviewCursorIdx(0);
+                    }}
+                    className="rounded-lg border border-botanical-border bg-botanical-canvas px-2.5 py-1.5 text-xs font-bold text-botanical-sage"
+                  >
+                    <option value="ALL">📚 Tất cả Nguồn đề</option>
+                    {allAvailableSources.map((src) => (
+                      <option key={src} value={src}>
+                        📚 {src}
+                      </option>
+                    ))}
+                    <option value={DEFAULT_UNGROUPED_SOURCE}>
+                      {DEFAULT_UNGROUPED_SOURCE}
+                    </option>
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReviewBoxFilter('DUE');
+                      setReviewCursorIdx(0);
+                    }}
+                    className={`rounded-lg border px-3 py-1.5 text-xs font-bold transition ${
+                      reviewBoxFilter === 'DUE'
+                        ? 'border-botanical-terracotta bg-botanical-terracotta text-white'
+                        : 'border-botanical-border bg-botanical-canvas text-botanical-ink'
+                    }`}
+                  >
+                    Đến hạn hôm nay ({analytics.dueTodayCount})
+                  </button>
+
+                  {([1, 2, 3, 4, 5] as const).map((boxNum) => {
+                    const dayMap: Record<number, string> = {
+                      1: '1d',
+                      2: '3d',
+                      3: '7d',
+                      4: '14d',
+                      5: '30d',
+                    };
+                    return (
+                      <button
+                        key={boxNum}
+                        type="button"
+                        onClick={() => {
+                          setReviewBoxFilter(boxNum);
+                          setReviewCursorIdx(0);
+                        }}
+                        className={`rounded-lg border px-2.5 py-1.5 text-xs font-bold transition ${
+                          reviewBoxFilter === boxNum
+                            ? 'border-botanical-sage bg-botanical-sage text-white'
+                            : 'border-botanical-border bg-botanical-canvas text-botanical-ink'
+                        }`}
+                      >
+                        Hộp {boxNum} ({dayMap[boxNum]}): {leitnerBoxCounts[boxNum] || 0}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Khu vực hiển thị câu hỏi Phục Thù Leitner với Zoom + Split-Pane */}
+            {!currentReviewItem ? (
+              <div className="rounded-xl border border-botanical-border bg-botanical-surface p-10 text-center">
+                <p className="text-sm font-bold text-botanical-ink">
+                  Không có câu hỏi nào trong bộ lọc Phục Thù hiện tại!
+                </p>
+                <p className="mt-1 text-xs text-botanical-muted">
+                  Bạn có thể bấm chọn sang <strong>Hộp 1</strong>, <strong>Hộp 2</strong>... ở góc trên bên phải để ôn tập bất kỳ lúc nào.
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-botanical-border bg-botanical-surface p-5">
+                {/* Thanh điều hướng Câu trước / Câu tiếp theo trong Phục Thù */}
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-botanical-border pb-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-md bg-botanical-sage px-2.5 py-1 font-mono text-xs font-bold text-white">
+                      {currentReviewItem.subjectName} • {currentReviewItem.topic}
+                    </span>
+                    <span className="rounded border border-botanical-sage/40 bg-botanical-mossMist px-2.5 py-1 font-mono text-xs font-bold text-botanical-sage">
+                      📚 {extractSourceFromItem(currentReviewItem)}
+                    </span>
+                    <span className="rounded border border-botanical-border bg-botanical-canvas px-2.5 py-1 font-mono text-xs text-botanical-muted">
+                      Đang ở Hộp Leitner {currentReviewItem.leitnerBox}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={reviewCursorIdx <= 0}
+                      onClick={() =>
+                        setReviewCursorIdx((prev) => Math.max(0, prev - 1))
+                      }
+                      className="inline-flex items-center gap-1 rounded-lg border border-botanical-border bg-botanical-canvas px-2.5 py-1 text-xs font-bold text-botanical-ink disabled:opacity-40"
+                    >
+                      <ArrowLeft className="h-3.5 w-3.5" /> Câu trước
+                    </button>
+                    <span className="font-mono text-xs font-extrabold text-botanical-ink">
+                      Câu {Math.min(reviewCursorIdx + 1, reviewFilteredList.length)} /{' '}
+                      {reviewFilteredList.length}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={reviewCursorIdx >= reviewFilteredList.length - 1}
+                      onClick={() =>
+                        setReviewCursorIdx((prev) =>
+                          Math.min(reviewFilteredList.length - 1, prev + 1)
+                        )
+                      }
+                      className="inline-flex items-center gap-1 rounded-lg border border-botanical-border bg-botanical-canvas px-2.5 py-1 text-xs font-bold text-botanical-ink disabled:opacity-40"
+                    >
+                      Câu tiếp <ArrowRight className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Trạm Split-Pane + Zoom In/Out + Active Recall cho Phục Thù Leitner */}
+                <ActiveRecallSplitWorkspace
+                  item={currentReviewItem}
+                  onUpdateItem={handleUpdateLogItem}
+                  onReviewGrade={handleReviewGrade}
+                  onOpenFullscreenZoom={setFullscreenZoomItem}
+                />
+              </div>
+            )}
+          </section>
         )}
 
         {activeTab === 'CHECKLIST' && (
@@ -2645,6 +3644,39 @@ export default function OmniErrorLogAppPage() {
           />
         )}
       </main>
+
+      {/* MODAL LIGHTBOX ZOOM TOÀN MÀN HÌNH (SOI RÕ ĐỀ BÀI Ở MỌI CHỖ) */}
+      {fullscreenZoomItem && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-botanical-canvas p-4 sm:p-6">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-botanical-border bg-botanical-surface px-4 py-2.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded bg-botanical-sage px-2.5 py-0.5 font-mono text-xs font-bold text-white">
+                {fullscreenZoomItem.subjectName} • {fullscreenZoomItem.topic}
+              </span>
+              <span className="font-mono text-xs font-bold text-botanical-sage">
+                📚 {extractSourceFromItem(fullscreenZoomItem)}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setFullscreenZoomItem(null)}
+              className="inline-flex items-center gap-1 rounded-lg border border-botanical-terracotta bg-botanical-terracotta px-3 py-1 text-xs font-extrabold text-white"
+            >
+              <X className="h-4 w-4" /> Đóng Chế Độ Toàn Màn Hình (ESC)
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-hidden">
+            <UniversalZoomableProblemView
+              questionText={fullscreenZoomItem.questionText}
+              problemImageUrl={fullscreenZoomItem.problemImageUrl}
+              titleBadge="CHẾ ĐỘ SOI ĐỀ BÀI TOÀN MÀN HÌNH (CUỘN CHUỘT ĐỂ PHÓNG TO TỐI ĐA 500%)"
+              maxHeightClass="!h-[calc(100vh-140px)] !max-h-[calc(100vh-140px)]"
+            />
+          </div>
+        </div>
+      )}
 
       {/* BÀN PHÍM ẢO TIẾNG VIỆT NỔI (FLAT 2D BORDER) */}
       {showVirtualKeyboard && (
