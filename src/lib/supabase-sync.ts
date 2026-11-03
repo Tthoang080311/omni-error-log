@@ -104,7 +104,7 @@ export async function testSupabaseConnection(): Promise<{
   try {
     const endpoint = `${cfg.url}/rest/v1/${encodeURIComponent(
       cfg.tableName
-    )}?select=id&limit=1000`;
+    )}?select=*&limit=1000`;
     const res = await fetch(endpoint, {
       method: 'GET',
       headers: buildSupabaseHeaders(cfg.anonKey),
@@ -126,7 +126,7 @@ export async function testSupabaseConnection(): Promise<{
     return {
       ok: true,
       rowCount: count,
-      message: `Kết nối thành công! Đang có ${count} bản ghi trên bảng "${cfg.tableName}".`,
+      message: `Kết nối & Đồng bộ thành công! Đang có ${count} bản ghi trên bảng "${cfg.tableName}".`,
     };
   } catch (err) {
     return {
@@ -136,6 +136,7 @@ export async function testSupabaseConnection(): Promise<{
   }
 }
 
+// Kéo toàn bộ bản ghi từ Supabase (Không phụ thuộc vào cột updated_at trên DB)
 export async function fetchAllLogsFromSupabase(): Promise<
   ErrorLogItem[] | null
 > {
@@ -145,7 +146,7 @@ export async function fetchAllLogsFromSupabase(): Promise<
   try {
     const endpoint = `${cfg.url}/rest/v1/${encodeURIComponent(
       cfg.tableName
-    )}?select=*&order=updated_at.desc`;
+    )}?select=*`;
     const res = await fetch(endpoint, {
       method: 'GET',
       headers: buildSupabaseHeaders(cfg.anonKey),
@@ -156,6 +157,7 @@ export async function fetchAllLogsFromSupabase(): Promise<
     const rows = await res.json();
     if (!Array.isArray(rows)) return null;
 
+    // Khôi phục danh mục Chuyên đề nhỏ & Nguồn đề nếu có bản ghi Meta trên Cloud
     const metaRow = rows.find((r) => r?.id === TAXONOMY_META_ROW_ID);
     if (metaRow?.payload && typeof window !== 'undefined') {
       try {
@@ -176,7 +178,7 @@ export async function fetchAllLogsFromSupabase(): Promise<
       }
     }
 
-    return rows
+    const parsedItems = rows
       .filter((r) => r && r.id !== TAXONOMY_META_ROW_ID)
       .map((r) => {
         if (r.payload && typeof r.payload === 'object') {
@@ -184,17 +186,29 @@ export async function fetchAllLogsFromSupabase(): Promise<
             ...r.payload,
             id: String(r.id || r.payload.id),
             updatedAt: String(
-              r.updated_at || r.payload.updatedAt || new Date().toISOString()
+              r.updated_at ||
+                r.payload.updatedAt ||
+                r.created_at ||
+                r.payload.createdAt ||
+                new Date().toISOString()
             ),
           } as ErrorLogItem;
         }
         return r as ErrorLogItem;
       });
+
+    // Sắp xếp trực tiếp bằng JS theo thời gian mới nhất
+    return parsedItems.sort(
+      (a, b) =>
+        new Date(b.updatedAt || b.createdAt || 0).getTime() -
+        new Date(a.updatedAt || a.createdAt || 0).getTime()
+    );
   } catch {
     return null;
   }
 }
 
+// Đẩy bản ghi lên Supabase kèm cơ chế Fallback tự động nếu bảng không có cột updated_at
 export async function upsertLogsToSupabase(
   itemsOrSingle: ErrorLogItem | ErrorLogItem[]
 ): Promise<boolean> {
@@ -204,13 +218,14 @@ export async function upsertLogsToSupabase(
   const list = Array.isArray(itemsOrSingle) ? itemsOrSingle : [itemsOrSingle];
   const nowIso = new Date().toISOString();
 
-  const rowsToUpsert: Array<Record<string, unknown>> = list
-    .filter((it) => it && it.id)
-    .map((it) => ({
-      id: String(it.id),
-      payload: it,
-      updated_at: it.updatedAt || nowIso,
-    }));
+  const baseEntries: Array<{ id: string; payload: unknown; updated_at: string }> =
+    list
+      .filter((it) => it && it.id)
+      .map((it) => ({
+        id: String(it.id),
+        payload: it,
+        updated_at: it.updatedAt || nowIso,
+      }));
 
   if (typeof window !== 'undefined') {
     try {
@@ -221,7 +236,7 @@ export async function upsertLogsToSupabase(
         'OMNI_CUSTOM_SOURCES_LIST_V1'
       );
       if (rawSubs || rawSources) {
-        rowsToUpsert.push({
+        baseEntries.push({
           id: TAXONOMY_META_ROW_ID,
           payload: {
             subjects: rawSubs ? JSON.parse(rawSubs) : undefined,
@@ -236,22 +251,38 @@ export async function upsertLogsToSupabase(
     }
   }
 
-  if (rowsToUpsert.length === 0) return true;
+  if (baseEntries.length === 0) return true;
+
+  const endpoint = `${cfg.url}/rest/v1/${encodeURIComponent(
+    cfg.tableName
+  )}?on_conflict=id`;
+  const headers = buildSupabaseHeaders(
+    cfg.anonKey,
+    'resolution=merge-duplicates,return=minimal'
+  );
 
   try {
-    const endpoint = `${cfg.url}/rest/v1/${encodeURIComponent(
-      cfg.tableName
-    )}?on_conflict=id`;
-    const res = await fetch(endpoint, {
+    // Lần 1: Thử đẩy đầy đủ { id, payload, updated_at }
+    const resWithTimestamp = await fetch(endpoint, {
       method: 'POST',
-      headers: buildSupabaseHeaders(
-        cfg.anonKey,
-        'resolution=merge-duplicates,return=minimal'
-      ),
-      body: JSON.stringify(rowsToUpsert),
+      headers,
+      body: JSON.stringify(baseEntries),
     });
 
-    return res.ok;
+    if (resWithTimestamp.ok) return true;
+
+    // Lần 2 (Fallback): Nếu bảng trên Supabase không có cột updated_at, chỉ gửi { id, payload }
+    const rowsWithoutTimestamp = baseEntries.map(({ id, payload }) => ({
+      id,
+      payload,
+    }));
+    const resMinimal = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(rowsWithoutTimestamp),
+    });
+
+    return resMinimal.ok;
   } catch {
     return false;
   }
