@@ -68,7 +68,6 @@ import {
   FileText,
   Columns,
   FolderKanban,
-  Plus,
   X,
   Maximize2,
   Layers,
@@ -101,7 +100,7 @@ const LOCAL_CACHE_KEY = 'OMNI_ERROR_LOG_SNAPSHOT_V1';
 const LOCAL_OUTBOX_KEY = 'OMNI_ERROR_LOG_OUTBOX_V1';
 const LOCAL_IME_MODE_KEY = 'OMNI_VN_IME_MODE';
 const LOCAL_SPLIT_RATIO_KEY = 'OMNI_SPLIT_PANE_LEFT_PERCENT_V1';
-const LOCAL_CUSTOM_TOPICS_KEY = 'OMNI_CUSTOM_TOPICS_MAP_V1';
+const LOCAL_SUBJECTS_STORAGE_KEY = 'OMNI_SUBJECTS_AND_TOPICS_V2';
 const LOCAL_CUSTOM_SOURCES_KEY = 'OMNI_CUSTOM_SOURCES_LIST_V1';
 const SOURCE_REF_PREFIX = '[NGUỒN]: ';
 const DEFAULT_UNGROUPED_SOURCE = 'Chưa phân loại nguồn đề';
@@ -148,7 +147,7 @@ function attachSourceToItem(
   const nextRefs = cleanSource
     ? [
         {
-          id: `src_${ item.id }`,
+          id: `src_${item.id}`,
           title: `${SOURCE_REF_PREFIX}${cleanSource}`,
           type: 'BOOK' as const,
         },
@@ -201,7 +200,7 @@ const QUICK_ROOT_CAUSE_TAGS: readonly QuickRootCauseTag[] = [
 ];
 
 // ============================================================================
-// HÀM CHUẨN HÓA DỮ LIỆU CHỐNG SẬP
+// HÀM CHUẨN HÓA DỮ LIỆU CHỐNG SẬP (ĐÃ BỔ SUNG ĐẦY ĐỦ solutionImageUrl)
 // ============================================================================
 function sanitizeLogItem(raw: any): ErrorLogItem {
   const base =
@@ -226,7 +225,14 @@ function sanitizeLogItem(raw: any): ErrorLogItem {
     questionText: String(
       base.questionText ?? base.question_text ?? base.question ?? ''
     ),
-    problemImageUrl: base.problemImageUrl ?? base.problem_image_url ?? undefined,
+    problemImageUrl:
+      base.problemImageUrl ?? base.problem_image_url ?? undefined,
+    solutionImageUrl:
+      base.solutionImageUrl ??
+      base.solution_image_url ??
+      base.answerImageUrl ??
+      base.answer_image_url ??
+      undefined,
     myWrongStep: String(
       base.myWrongStep ?? base.my_wrong_step ?? base.myAnswer ?? ''
     ),
@@ -274,7 +280,7 @@ function sanitizeLogList(list: unknown): ErrorLogItem[] {
 }
 
 // ============================================================================
-// COMPONENT KHUNG ZOOM ĐỀ BÀI ĐA NĂNG (DÙNG CHUNG CHO MỌI NƠI + FULLSCREEN)
+// COMPONENT KHUNG ZOOM ĐA NĂNG (DÙNG CHO CẢ ĐỀ BÀI & ẢNH ĐÁP ÁN MỌI NƠI)
 // ============================================================================
 interface UniversalZoomableProblemViewProps {
   questionText: string;
@@ -303,7 +309,7 @@ const UniversalZoomableProblemView = memo(
           doubleClick={{ mode: 'zoomIn' }}
           panning={{ velocityDisabled: false }}
         >
-          {({ zoomIn, zoomOut, resetTransform, instance }) => (
+          {({ zoomIn, zoomOut, resetTransform }) => (
             <>
               <div className="mb-2 flex flex-wrap items-center justify-between gap-1.5 border-b border-botanical-border pb-1.5">
                 <span className="font-mono text-[10px] font-bold uppercase text-botanical-sage">
@@ -341,7 +347,7 @@ const UniversalZoomableProblemView = memo(
                       type="button"
                       onClick={onOpenFullscreen}
                       className="inline-flex items-center gap-1 rounded border border-botanical-sage bg-botanical-sage px-2 py-0.5 font-mono text-[10px] font-bold text-white hover:bg-botanical-terracotta hover:border-botanical-terracotta"
-                      title="Mở toàn màn hình để soi đề bài rõ nhất"
+                      title="Mở toàn màn hình để soi rõ nhất"
                     >
                       <Maximize2 className="h-3 w-3" /> Toàn màn hình
                     </button>
@@ -349,7 +355,6 @@ const UniversalZoomableProblemView = memo(
                 </div>
               </div>
 
-              {/* Nội dung đề bài kết hợp cả Text + Ảnh bên trong vùng Zoom */}
               <div className="overflow-hidden rounded border border-botanical-border bg-botanical-canvas">
                 <TransformComponent
                   wrapperClass={`!w-full ${maxHeightClass} cursor-grab active:cursor-grabbing`}
@@ -364,13 +369,13 @@ const UniversalZoomableProblemView = memo(
                   {problemImageUrl ? (
                     <img
                       src={problemImageUrl}
-                      alt="Hình ảnh đề bài"
+                      alt="Hình ảnh minh họa"
                       className="max-h-[420px] w-auto object-contain select-none rounded border border-botanical-border bg-white p-1"
                     />
                   ) : (
                     !questionText?.trim() && (
                       <div className="py-8 text-center text-xs text-botanical-muted">
-                        Chưa có ảnh hoặc văn bản đề bài.
+                        Chưa có ảnh hoặc văn bản.
                       </div>
                     )
                   )}
@@ -1039,7 +1044,7 @@ function setReactInputValue(
 }
 
 // ============================================================================
-// 2. TRẠM ACTIVE RECALL 2 CỘT (DÙNG CHUNG CHO CẢ SỔ TAY & PHỤC THÙ LEITNER)
+// 2. TRẠM ACTIVE RECALL 2 CỘT (HIỂN THỊ ĐẦY ĐỦ ẢNH ĐÁP ÁN KHI LẬT + ZOOM IN/OUT)
 // ============================================================================
 interface ActiveRecallSplitWorkspaceProps {
   item: ErrorLogItem;
@@ -1359,7 +1364,7 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
           {!isAnswerRevealed ? (
             <div className="rounded-lg border border-botanical-terracotta/50 bg-botanical-terracottaBg/30 p-4 text-center">
               <p className="mb-2.5 text-xs font-medium text-botanical-ink">
-                Đáp án chuẩn và quy tắc NẾU — THÌ đang được giấu để kích hoạt{' '}
+                Đáp án chuẩn (Văn bản + Ảnh lời giải) và quy tắc NẾU — THÌ đang được giấu để kích hoạt{' '}
                 <strong>Active Recall</strong>.
               </p>
               <button
@@ -1375,7 +1380,7 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
             <div className="space-y-3 rounded-lg border border-botanical-sage bg-botanical-surface p-3.5">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-botanical-border pb-2">
                 <span className="font-mono text-[11px] font-extrabold uppercase text-botanical-sage">
-                  ĐỐI CHIẾU: [NHÁP CỦA TÔI] VS [ĐÁP ÁN CHUẨN]
+                  ĐỐI CHIẾU: [NHÁP CỦA TÔI] VS [ĐÁP ÁN CHUẨN &amp; ẢNH LỜI GIẢI]
                 </span>
                 <div className="flex items-center gap-2">
                   <span className="rounded border border-botanical-border bg-botanical-canvas px-2 py-0.5 font-mono text-[10px] font-bold text-botanical-ink">
@@ -1391,38 +1396,80 @@ const ActiveRecallSplitWorkspace = memo(function ActiveRecallSplitWorkspace({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                <div className="space-y-2 rounded-lg border border-botanical-terracotta/40 bg-botanical-terracottaBg/30 p-2.5 text-xs">
+              <div className="grid grid-cols-1 gap-3">
+                {/* HỘP 1: NHÁP CỦA TÔI & BƯỚC LÀM SAI LẦN TRƯỚC */}
+                <div className="grid grid-cols-1 gap-2.5 rounded-lg border border-botanical-terracotta/40 bg-botanical-terracottaBg/30 p-3 text-xs sm:grid-cols-2">
                   <div>
-                    <span className="block font-mono text-[10px] font-bold uppercase text-botanical-terracotta">
+                    <span className="mb-1 block font-mono text-[10px] font-bold uppercase text-botanical-terracotta">
                       1A. Nháp vừa giải lại của tôi:
                     </span>
                     <ScratchpadMarkdownMathPreview content={scratchpadText} />
                   </div>
-                  <div className="border-t border-botanical-border pt-2">
-                    <span className="block font-mono text-[10px] font-bold uppercase text-botanical-terracotta">
+                  <div className="border-t border-botanical-border pt-2 sm:border-l sm:border-t-0 sm:pl-2.5 sm:pt-0">
+                    <span className="mb-1 block font-mono text-[10px] font-bold uppercase text-botanical-terracotta">
                       1B. Bước làm sai lần trước:
                     </span>
-                    <MathText content={item.myWrongStep} />
+                    {item.myWrongStep ? (
+                      <MathText content={item.myWrongStep} />
+                    ) : (
+                      <span className="italic text-botanical-muted">
+                        (Xem khoanh đỏ trên ảnh đề bài)
+                      </span>
+                    )}
                   </div>
                 </div>
 
-                <div className="space-y-2 rounded-lg border border-botanical-matcha/40 bg-botanical-matchaBg/30 p-2.5 text-xs">
-                  <div>
-                    <span className="block font-mono text-[10px] font-bold uppercase text-botanical-matcha">
-                      2A. Đáp án &amp; Lời giải chuẩn:
+                {/* HỘP 2: ĐÁP ÁN & LỜI GIẢI CHUẨN (HIỂN THỊ CẢ VĂN BẢN + ẢNH LỜI GIẢI KÈM ZOOM) */}
+                <div className="space-y-2.5 rounded-lg border border-botanical-matcha/50 bg-botanical-matchaBg/30 p-3 text-xs">
+                  <div className="flex items-center justify-between border-b border-botanical-border pb-1.5">
+                    <span className="font-mono text-[10px] font-extrabold uppercase text-botanical-matcha">
+                      2A. Đáp án &amp; Lời giải chuẩn (Văn bản + Hình ảnh):
                     </span>
-                    <MathText content={item.correctSolution} />
                   </div>
-                  <div className="border-t border-botanical-border pt-2">
-                    <span className="mb-0.5 inline-block rounded bg-botanical-sage px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase text-white">
-                      PHÁC ĐỒ NẾU — THÌ
+
+                  {/* Hiển thị văn bản lời giải chuẩn nếu có */}
+                  {item.correctSolution && item.correctSolution.trim() && (
+                    <div className="rounded border border-botanical-border bg-botanical-surface p-2.5 text-botanical-ink">
+                      <MathText content={item.correctSolution} />
+                    </div>
+                  )}
+
+                  {/* Hiển thị ẢNH LỜI GIẢI CHUẨN (solutionImageUrl) tích hợp Zoom In / Out & Toàn màn hình */}
+                  {item.solutionImageUrl ? (
+                    <UniversalZoomableProblemView
+                      questionText=""
+                      problemImageUrl={item.solutionImageUrl}
+                      titleBadge="ẢNH LỜI GIẢI CHUẨN (CUỘN CHUỘT HOẶC BẤM NÚT ĐỂ ZOOM IN / OUT)"
+                      maxHeightClass="!max-h-[420px]"
+                      onOpenFullscreen={
+                        onOpenFullscreenZoom
+                          ? () =>
+                              onOpenFullscreenZoom({
+                                ...item,
+                                problemImageUrl: item.solutionImageUrl,
+                                questionText: item.correctSolution,
+                              })
+                          : undefined
+                      }
+                    />
+                  ) : (
+                    !item.correctSolution?.trim() && (
+                      <p className="italic text-botanical-muted">
+                        Chưa có văn bản hoặc ảnh lời giải chuẩn cho câu hỏi này. Bạn có thể bấm nút sửa (biểu tượng cây bút) trên thẻ để dán thêm ảnh vào Ô Ảnh 2.
+                      </p>
+                    )
+                  )}
+
+                  {/* PHÁC ĐỒ NẾU — THÌ */}
+                  <div className="rounded border border-botanical-border bg-botanical-surface p-2.5">
+                    <span className="mb-1 inline-block rounded bg-botanical-sage px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase text-white">
+                      PHÁC ĐỒ PHẢN XẠ NẾU — THÌ
                     </span>
-                    <div>
+                    <div className="mt-1">
                       <strong className="text-botanical-ochre">NẾU: </strong>
                       <MathText content={item.ifTrigger} className="inline" />
                     </div>
-                    <div>
+                    <div className="mt-0.5">
                       <strong className="text-botanical-matcha">THÌ: </strong>
                       <MathText content={item.thenAction} className="inline" />
                     </div>
@@ -1817,29 +1864,17 @@ export default function OmniErrorLogAppPage() {
     Record<string, boolean>
   >({});
 
-  // State cho Tab PHỤC THÙ LEITNER (REVIEW) được nâng cấp trực tiếp với Zoom + Split-Pane
-  const [reviewBoxFilter, setReviewBoxFilter] = useState<'DUE' | 1 | 2 | 3 | 4 | 5>('DUE');
+  // State cho Tab PHỤC THÙ LEITNER (REVIEW)
+  const [reviewBoxFilter, setReviewBoxFilter] = useState<
+    'DUE' | 1 | 2 | 3 | 4 | 5
+  >('DUE');
   const [reviewSourceFilter, setReviewSourceFilter] = useState<string>('ALL');
   const [reviewCursorIdx, setReviewCursorIdx] = useState<number>(0);
 
-  // --- STATE CHUYÊN ĐỀ NHỎ (TỰ GHI / TỰ XOÁ) & NGUỒN ĐỀ ---
-  const [studioSubjectId, setStudioSubjectId] = useState<string>(
-    INITIAL_SUBJECTS[0]?.id || 'SAT_RW'
-  );
-  const [customTopicsBySubject, setCustomTopicsBySubject] = useState<
-    Record<string, string[]>
-  >({});
-  const [deletedDefaultTopics, setDeletedDefaultTopics] = useState<
-    Record<string, string[]>
-  >({});
-  const [newTopicInput, setNewTopicInput] = useState<string>('');
-  const [activePreselectedTopic, setActivePreselectedTopic] =
-    useState<string>('');
-
+  // Đồng bộ danh sách Chuyên đề & Nguồn đề từ localStorage (đã lưu trong ErrorEntryForm)
+  const [savedSubjectsList, setSavedSubjectsList] =
+    useState(INITIAL_SUBJECTS);
   const [customSourcesList, setCustomSourcesList] = useState<string[]>([]);
-  const [newSourceInput, setNewSourceInput] = useState<string>('');
-  const [activePreselectedSource, setActivePreselectedSource] =
-    useState<string>('');
 
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const deferredSubjectFilter = useDeferredValue(subjectFilter);
@@ -1868,167 +1903,53 @@ export default function OmniErrorLogAppPage() {
     HTMLInputElement | HTMLTextAreaElement | null
   >(null);
 
-  // Khởi tạo danh sách Chuyên đề nhỏ (Tự ghi / Tự xoá) và Nguồn đề từ localStorage
-  useEffect(() => {
+  // Đọc danh sách Chuyên đề nhỏ và Nguồn đề đã lưu từ localStorage
+  const refreshSavedTaxonomyFromStorage = useCallback(() => {
     try {
-      const rawTopics = window.localStorage.getItem(LOCAL_CUSTOM_TOPICS_KEY);
-      if (rawTopics) {
-        const parsed = JSON.parse(rawTopics);
-        if (parsed?.custom) setCustomTopicsBySubject(parsed.custom);
-        if (parsed?.deletedDefaults)
-          setDeletedDefaultTopics(parsed.deletedDefaults);
+      const rawSubs = window.localStorage.getItem(LOCAL_SUBJECTS_STORAGE_KEY);
+      if (rawSubs) {
+        const parsedSubs = JSON.parse(rawSubs);
+        if (Array.isArray(parsedSubs) && parsedSubs.length > 0) {
+          setSavedSubjectsList(parsedSubs);
+        }
       }
       const rawSources = window.localStorage.getItem(LOCAL_CUSTOM_SOURCES_KEY);
       if (rawSources) {
         const parsedSources = JSON.parse(rawSources);
-        if (Array.isArray(parsedSources)) setCustomSourcesList(parsedSources);
+        if (Array.isArray(parsedSources)) {
+          setCustomSourcesList(parsedSources);
+        }
       }
     } catch {
       // Bỏ qua
     }
   }, []);
 
-  const persistTopicsState = useCallback(
-    (
-      nextCustom: Record<string, string[]>,
-      nextDeletedDefaults: Record<string, string[]>
-    ) => {
-      setCustomTopicsBySubject(nextCustom);
-      setDeletedDefaultTopics(nextDeletedDefaults);
-      try {
-        window.localStorage.setItem(
-          LOCAL_CUSTOM_TOPICS_KEY,
-          JSON.stringify({
-            custom: nextCustom,
-            deletedDefaults: nextDeletedDefaults,
-          })
-        );
-      } catch {
-        // Bỏ qua
-      }
-    },
-    []
-  );
+  useEffect(() => {
+    refreshSavedTaxonomyFromStorage();
+  }, [refreshSavedTaxonomyFromStorage]);
 
-  const persistSourcesState = useCallback((nextSources: string[]) => {
-    setCustomSourcesList(nextSources);
-    try {
-      window.localStorage.setItem(
-        LOCAL_CUSTOM_SOURCES_KEY,
-        JSON.stringify(nextSources)
-      );
-    } catch {
-      // Bỏ qua
-    }
-  }, []);
-
-  // Tổng hợp các chuyên đề nhỏ của 1 môn (Gồm mặc định chưa bị xoá + Tự ghi + Đã có trong logs)
   const getTopicsForSubject = useCallback(
     (subId: string): string[] => {
-      const subDef = INITIAL_SUBJECTS.find((s) => s.id === subId) as any;
-      const defaultTopics: string[] = Array.isArray(subDef?.topics)
-        ? subDef.topics
-        : Array.isArray(subDef?.subTopics)
-          ? subDef.subTopics
-          : [];
-      const deletedSet = new Set(deletedDefaultTopics[subId] || []);
-      const customList = customTopicsBySubject[subId] || [];
+      const subDef = savedSubjectsList.find((s) => s.id === subId) as any;
+      const defaultTopics: string[] = Array.isArray(subDef?.defaultTopics)
+        ? subDef.defaultTopics
+        : [];
       const fromLogs = logs
         .filter((l) => l.subjectId === subId && l.topic?.trim())
-        .map((l) => l.topic.trim())
-        .filter((t) => !deletedSet.has(t));
+        .map((l) => l.topic.trim());
 
-      return Array.from(
-        new Set([
-          ...customList,
-          ...defaultTopics.filter((t) => !deletedSet.has(t)),
-          ...fromLogs,
-        ])
-      );
+      return Array.from(new Set([...defaultTopics, ...fromLogs]));
     },
-    [customTopicsBySubject, deletedDefaultTopics, logs]
+    [savedSubjectsList, logs]
   );
 
-  // Tổng hợp tất cả các Nguồn đề hiện có
   const allAvailableSources = useMemo(() => {
     const fromLogs = logs
       .map((l) => extractSourceFromItem(l))
       .filter((s) => s && s !== DEFAULT_UNGROUPED_SOURCE);
     return Array.from(new Set([...customSourcesList, ...fromLogs]));
   }, [customSourcesList, logs]);
-
-  // Thêm chuyên đề nhỏ mới (Tự ghi)
-  const handleAddCustomTopic = useCallback(() => {
-    const trimmed = newTopicInput.trim();
-    if (!trimmed) return;
-    const currentCustom = customTopicsBySubject[studioSubjectId] || [];
-    const nextCustom = {
-      ...customTopicsBySubject,
-      [studioSubjectId]: Array.from(new Set([trimmed, ...currentCustom])),
-    };
-    const currentDeleted = deletedDefaultTopics[studioSubjectId] || [];
-    const nextDeleted = {
-      ...deletedDefaultTopics,
-      [studioSubjectId]: currentDeleted.filter((t) => t !== trimmed),
-    };
-    persistTopicsState(nextCustom, nextDeleted);
-    setActivePreselectedTopic(trimmed);
-    setNewTopicInput('');
-  }, [
-    customTopicsBySubject,
-    deletedDefaultTopics,
-    newTopicInput,
-    persistTopicsState,
-    studioSubjectId,
-  ]);
-
-  // Xoá chuyên đề nhỏ (Tự xoá được cả chuyên đề tự thêm lẫn chuyên đề mặc định)
-  const handleDeleteTopic = useCallback(
-    (subId: string, topicToRemove: string) => {
-      const currentCustom = customTopicsBySubject[subId] || [];
-      const nextCustom = {
-        ...customTopicsBySubject,
-        [subId]: currentCustom.filter((t) => t !== topicToRemove),
-      };
-      const currentDeleted = deletedDefaultTopics[subId] || [];
-      const nextDeleted = {
-        ...deletedDefaultTopics,
-        [subId]: Array.from(new Set([...currentDeleted, topicToRemove])),
-      };
-      persistTopicsState(nextCustom, nextDeleted);
-      if (activePreselectedTopic === topicToRemove) {
-        setActivePreselectedTopic('');
-      }
-    },
-    [
-      activePreselectedTopic,
-      customTopicsBySubject,
-      deletedDefaultTopics,
-      persistTopicsState,
-    ]
-  );
-
-  // Thêm Nguồn đề mới
-  const handleAddCustomSource = useCallback(() => {
-    const trimmed = newSourceInput.trim();
-    if (!trimmed) return;
-    const next = Array.from(new Set([trimmed, ...customSourcesList]));
-    persistSourcesState(next);
-    setActivePreselectedSource(trimmed);
-    setNewSourceInput('');
-  }, [customSourcesList, newSourceInput, persistSourcesState]);
-
-  // Xoá Nguồn đề khỏi danh sách gợi ý nhanh
-  const handleDeleteCustomSource = useCallback(
-    (sourceToRemove: string) => {
-      const next = customSourcesList.filter((s) => s !== sourceToRemove);
-      persistSourcesState(next);
-      if (activePreselectedSource === sourceToRemove) {
-        setActivePreselectedSource('');
-      }
-    },
-    [activePreselectedSource, customSourcesList, persistSourcesState]
-  );
 
   const applyLogsAndAnalytics = useCallback(
     (
@@ -2372,6 +2293,10 @@ export default function OmniErrorLogAppPage() {
         setIsCmdKOpen((prev) => !prev);
         return;
       }
+      if (e.key === 'Escape' && fullscreenZoomItem) {
+        setFullscreenZoomItem(null);
+        return;
+      }
       if (
         (e.ctrlKey || e.metaKey) &&
         e.shiftKey &&
@@ -2388,7 +2313,7 @@ export default function OmniErrorLogAppPage() {
     };
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, []);
+  }, [fullscreenZoomItem]);
 
   useEffect(() => {
     const trackFocusTarget = (e: FocusEvent) => {
@@ -2772,9 +2697,6 @@ export default function OmniErrorLogAppPage() {
 
   const handleStartEditCard = useCallback((item: ErrorLogItem) => {
     setEditingItem(sanitizeLogItem(item));
-    setActivePreselectedTopic(item.topic || '');
-    const src = extractSourceFromItem(item);
-    setActivePreselectedSource(src === DEFAULT_UNGROUPED_SOURCE ? '' : src);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
@@ -3015,245 +2937,16 @@ export default function OmniErrorLogAppPage() {
       <main className="mx-auto max-w-[1440px] space-y-6 px-4 py-6 sm:px-6">
         {activeTab === 'WORKSTATION' && (
           <>
-            {/* 0. TRẠM QUẢN LÝ CHUYÊN ĐỀ NHỎ (TỰ GHI / TỰ XOÁ) & NGUỒN ĐỀ (GOM NHÓM CÙNG KHU) */}
-            <section className="rounded-xl border border-botanical-border bg-botanical-surface p-4">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-botanical-border pb-2.5">
-                <div className="flex items-center gap-2">
-                  <Tag className="h-4 w-4 text-botanical-sage" />
-                  <h2 className="text-xs font-extrabold uppercase tracking-tight text-botanical-ink">
-                    TRẠM TÙY BIẾN CHUYÊN ĐỀ NHỎ (TỰ GHI / TỰ XOÁ) &amp; NGUỒN ĐỀ
-                  </h2>
-                </div>
-                <span className="text-[11px] text-botanical-muted">
-                  Chuyên đề và Nguồn đề đang chọn bên dưới sẽ tự động gắn vào câu hỏi khi bạn bấm Lưu trong Sổ Tay.
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-                {/* Cột trái: Quản lý Chuyên đề nhỏ tự ghi / tự xoá theo từng môn */}
-                <div className="space-y-2.5 rounded-lg border border-botanical-border bg-botanical-canvas p-3 lg:col-span-7">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-mono text-[11px] font-bold uppercase text-botanical-sage">
-                      1. Quản lý Chuyên đề nhỏ theo môn (Bấm × để xoá):
-                    </span>
-                    <select
-                      value={studioSubjectId}
-                      onChange={(e) => setStudioSubjectId(e.target.value)}
-                      className="rounded border border-botanical-border bg-botanical-surface px-2.5 py-1 text-xs font-bold text-botanical-ink"
-                    >
-                      {INITIAL_SUBJECTS.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Ô tự gõ thêm chuyên đề nhỏ mới */}
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={newTopicInput}
-                      onChange={(e) => setNewTopicInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          handleAddCustomTopic();
-                        }
-                      }}
-                      placeholder="Tự gõ tên chuyên đề nhỏ mới (VD: Dao động cơ, Command of Evidence, Hàm hợp)..."
-                      className="flex-1 rounded-lg border border-botanical-border bg-botanical-surface px-3 py-1.5 text-xs text-botanical-ink focus:border-botanical-sage focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleAddCustomTopic}
-                      className="inline-flex items-center gap-1 rounded-lg border border-botanical-sage bg-botanical-sage px-3 py-1.5 text-xs font-bold text-white hover:bg-botanical-terracotta hover:border-botanical-terracotta"
-                    >
-                      <Plus className="h-3.5 w-3.5" /> Thêm chuyên đề
-                    </button>
-                  </div>
-
-                  {/* Danh sách các chip chuyên đề nhỏ (Cho phép bấm chọn hoặc bấm × để xoá) */}
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    {getTopicsForSubject(studioSubjectId).map((tp) => {
-                      const isSelected = activePreselectedTopic === tp;
-                      return (
-                        <div
-                          key={tp}
-                          className={`inline-flex items-center rounded-md border text-xs font-semibold transition ${
-                            isSelected
-                              ? 'border-botanical-sage bg-botanical-sage text-white'
-                              : 'border-botanical-border bg-botanical-surface text-botanical-ink'
-                          }`}
-                        >
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setActivePreselectedTopic((prev) =>
-                                prev === tp ? '' : tp
-                              )
-                            }
-                            className="px-2.5 py-1"
-                            title="Bấm để chọn gắn chuyên đề này vào câu hỏi"
-                          >
-                            {tp}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleDeleteTopic(studioSubjectId, tp)
-                            }
-                            title={`Xoá chuyên đề "${tp}"`}
-                            className={`border-l px-1.5 py-1 hover:text-botanical-terracotta ${
-                              isSelected
-                                ? 'border-white/30 text-white'
-                                : 'border-botanical-border text-botanical-muted'
-                            }`}
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Cột phải: Quản lý Nguồn đề / Bộ đề (Để ghép các câu cùng nguồn thành 1 khu) */}
-                <div className="space-y-2.5 rounded-lg border border-botanical-border bg-botanical-canvas p-3 lg:col-span-5">
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-[11px] font-bold uppercase text-botanical-terracotta">
-                      2. Nguồn đề / Bộ đề (Ghép câu cùng nguồn thành 1 khu):
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={newSourceInput}
-                      onChange={(e) => setNewSourceInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          handleAddCustomSource();
-                        }
-                      }}
-                      placeholder="VD: Bluebook Test 5, Cam 19 Test 2, Đề Sở HN..."
-                      className="flex-1 rounded-lg border border-botanical-border bg-botanical-surface px-3 py-1.5 text-xs text-botanical-ink focus:border-botanical-sage focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleAddCustomSource}
-                      className="inline-flex items-center gap-1 rounded-lg border border-botanical-terracotta bg-botanical-terracotta px-3 py-1.5 text-xs font-bold text-white"
-                    >
-                      <Plus className="h-3.5 w-3.5" /> Tạo Nguồn
-                    </button>
-                  </div>
-
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    {allAvailableSources.length === 0 ? (
-                      <span className="text-[11px] italic text-botanical-muted">
-                        Chưa có nguồn đề nào. Hãy gõ tên đề (VD: Bluebook Test 5) để tự động gom các câu hỏi cùng đề vào 1 khu!
-                      </span>
-                    ) : (
-                      allAvailableSources.map((src) => {
-                        const isSelected = activePreselectedSource === src;
-                        return (
-                          <div
-                            key={src}
-                            className={`inline-flex items-center rounded-md border text-xs font-semibold transition ${
-                              isSelected
-                                ? 'border-botanical-terracotta bg-botanical-terracotta text-white'
-                                : 'border-botanical-border bg-botanical-surface text-botanical-ink'
-                            }`}
-                          >
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setActivePreselectedSource((prev) =>
-                                  prev === src ? '' : src
-                                )
-                              }
-                              className="px-2.5 py-1"
-                            >
-                              📚 {src}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteCustomSource(src)}
-                              title={`Xoá nguồn "${src}" khỏi thanh chọn nhanh`}
-                              className={`border-l px-1.5 py-1 ${
-                                isSelected
-                                  ? 'border-white/30 text-white'
-                                  : 'border-botanical-border text-botanical-muted hover:text-botanical-terracotta'
-                              }`}
-                            >
-                              <X className="h-3 w-3" />
-                            </button>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Thanh trạng thái gắn tự động vào Form */}
-              {(activePreselectedTopic || activePreselectedSource) && (
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-botanical-sage bg-botanical-mossMist px-3 py-1.5 text-xs">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <span className="font-bold text-botanical-sage">
-                      Đang ghim cho câu hỏi sắp lưu:
-                    </span>
-                    {activePreselectedTopic && (
-                      <span className="rounded border border-botanical-sage bg-botanical-surface px-2 py-0.5 font-bold text-botanical-ink">
-                        Chuyên đề: {activePreselectedTopic}
-                      </span>
-                    )}
-                    {activePreselectedSource && (
-                      <span className="rounded border border-botanical-terracotta bg-botanical-surface px-2 py-0.5 font-bold text-botanical-terracotta">
-                        Nguồn đề: {activePreselectedSource}
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActivePreselectedTopic('');
-                      setActivePreselectedSource('');
-                    }}
-                    className="text-[11px] font-bold text-botanical-terracotta hover:underline"
-                  >
-                    Bỏ ghim
-                  </button>
-                </div>
-              )}
-            </section>
-
-            {/* 1. Form Nhập Lỗi 3 Cột WHAT - WHY - HOW */}
+            {/* 1. Form Nhập Lỗi 3 Cột WHAT - WHY - HOW (Đã tích hợp trực tiếp Chuyên đề nhỏ & Nguồn đề bên trong Khung 1) */}
             <ErrorEntryForm
               editingItem={editingItem}
               customApiKey={customApiKey}
               onCancelEdit={() => setEditingItem(null)}
               onSaveSuccess={async (rawSavedItem, openTwinModal) => {
-                let savedItem = sanitizeLogItem(rawSavedItem);
-
-                // Nếu người dùng đã chọn/gõ Chuyên đề nhỏ tùy chỉnh trên thanh Studio, ưu tiên ghi đè
-                if (activePreselectedTopic.trim()) {
-                  savedItem = {
-                    ...savedItem,
-                    topic: activePreselectedTopic.trim(),
-                  };
-                }
-
-                // Nếu người dùng đã chọn/gõ Nguồn đề trên thanh Studio, gắn Nguồn đề vào bản ghi
-                if (activePreselectedSource.trim()) {
-                  savedItem = attachSourceToItem(
-                    savedItem,
-                    activePreselectedSource.trim()
-                  );
-                }
-
+                const savedItem = sanitizeLogItem(rawSavedItem);
                 setEditingItem(null);
+                refreshSavedTaxonomyFromStorage();
+
                 const nextLogs = [
                   savedItem,
                   ...logsRef.current.filter((it) => it.id !== savedItem.id),
@@ -3284,7 +2977,6 @@ export default function OmniErrorLogAppPage() {
 
                 {/* Bộ lọc Tìm kiếm, Chế độ Gom Nhóm Theo Nguồn, Môn học & Mã lỗi WHY */}
                 <div className="flex flex-wrap items-center gap-2">
-                  {/* Nút bật/tắt Gom nhóm các câu cùng nguồn thành 1 khu */}
                   <button
                     type="button"
                     onClick={() => setGroupBySourceMode((prev) => !prev)}
@@ -3338,7 +3030,7 @@ export default function OmniErrorLogAppPage() {
                     className="rounded-lg border border-botanical-border bg-botanical-canvas px-2.5 py-1.5 text-xs font-medium text-botanical-ink"
                   >
                     <option value="ALL">Tất cả Môn học</option>
-                    {INITIAL_SUBJECTS.map((s) => (
+                    {savedSubjectsList.map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.name}
                       </option>
@@ -3487,7 +3179,6 @@ export default function OmniErrorLogAppPage() {
         {/* TAB PHỤC THÙ LEITNER ĐƯỢC NÂNG CẤP TRỰC TIẾP VỚI ZOOM IN/OUT MỌI NƠI + SPLIT-PANE */}
         {activeTab === 'REVIEW' && (
           <section className="space-y-4">
-            {/* Banner điều khiển 5 Hộp Leitner + Lọc theo Khu vực Nguồn đề */}
             <div className="rounded-xl border border-botanical-border bg-botanical-surface p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -3498,11 +3189,10 @@ export default function OmniErrorLogAppPage() {
                     Chế độ &ldquo;Phục Thù&rdquo; theo Thuật toán 5 Hộp Leitner (1 - 3 - 7 - 14 - 30 ngày)
                   </h2>
                   <p className="text-xs text-botanical-muted">
-                    Hỗ trợ <strong>Zoom In / Zoom Out đề bài trực tiếp</strong>, kéo thanh chia cột và đồng hồ bấm giờ tự động.
+                    Hỗ trợ <strong>Zoom In / Zoom Out cả Đề bài lẫn Ảnh đáp án</strong>, kéo thanh chia cột và đồng hồ bấm giờ tự động.
                   </p>
                 </div>
 
-                {/* Các nút lọc Hộp Leitner & Nguồn đề */}
                 <div className="flex flex-wrap items-center gap-1.5">
                   <select
                     value={reviewSourceFilter}
@@ -3568,7 +3258,6 @@ export default function OmniErrorLogAppPage() {
               </div>
             </div>
 
-            {/* Khu vực hiển thị câu hỏi Phục Thù Leitner với Zoom + Split-Pane */}
             {!currentReviewItem ? (
               <div className="rounded-xl border border-botanical-border bg-botanical-surface p-10 text-center">
                 <p className="text-sm font-bold text-botanical-ink">
@@ -3580,7 +3269,6 @@ export default function OmniErrorLogAppPage() {
               </div>
             ) : (
               <div className="rounded-xl border border-botanical-border bg-botanical-surface p-5">
-                {/* Thanh điều hướng Câu trước / Câu tiếp theo trong Phục Thù */}
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-botanical-border pb-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="rounded-md bg-botanical-sage px-2.5 py-1 font-mono text-xs font-bold text-white">
@@ -3624,7 +3312,6 @@ export default function OmniErrorLogAppPage() {
                   </div>
                 </div>
 
-                {/* Trạm Split-Pane + Zoom In/Out + Active Recall cho Phục Thù Leitner */}
                 <ActiveRecallSplitWorkspace
                   item={currentReviewItem}
                   onUpdateItem={handleUpdateLogItem}
@@ -3645,7 +3332,7 @@ export default function OmniErrorLogAppPage() {
         )}
       </main>
 
-      {/* MODAL LIGHTBOX ZOOM TOÀN MÀN HÌNH (SOI RÕ ĐỀ BÀI Ở MỌI CHỖ) */}
+      {/* MODAL LIGHTBOX ZOOM TOÀN MÀN HÌNH (SOI RÕ CẢ ĐỀ BÀI & ẢNH LỜI GIẢI) */}
       {fullscreenZoomItem && (
         <div className="fixed inset-0 z-50 flex flex-col bg-botanical-canvas p-4 sm:p-6">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-botanical-border bg-botanical-surface px-4 py-2.5">
@@ -3671,7 +3358,7 @@ export default function OmniErrorLogAppPage() {
             <UniversalZoomableProblemView
               questionText={fullscreenZoomItem.questionText}
               problemImageUrl={fullscreenZoomItem.problemImageUrl}
-              titleBadge="CHẾ ĐỘ SOI ĐỀ BÀI TOÀN MÀN HÌNH (CUỘN CHUỘT ĐỂ PHÓNG TO TỐI ĐA 500%)"
+              titleBadge="CHẾ ĐỘ SOI TOÀN MÀN HÌNH (CUỘN CHUỘT ĐỂ PHÓNG TO TỐI ĐA 500%)"
               maxHeightClass="!h-[calc(100vh-140px)] !max-h-[calc(100vh-140px)]"
             />
           </div>
