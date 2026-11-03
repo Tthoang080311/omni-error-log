@@ -2,6 +2,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import {
   ErrorLogItem,
   QuestionFormat,
@@ -38,6 +39,13 @@ import {
   ShieldAlert,
   CheckCircle2,
   Eye,
+  X,
+  FolderKanban,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
+  PenTool,
+  Search,
 } from 'lucide-react';
 
 interface ErrorEntryFormProps {
@@ -59,21 +67,53 @@ const VAGUE_FORBIDDEN_PHRASES = [
   'lần sau chú ý',
 ];
 
+const LOCAL_SUBJECTS_STORAGE_KEY = 'OMNI_SUBJECTS_AND_TOPICS_V2';
+const LOCAL_SOURCES_STORAGE_KEY = 'OMNI_CUSTOM_SOURCES_LIST_V1';
+const SOURCE_REF_PREFIX = '[NGUỒN]: ';
+
+function extractSourceFromItem(item?: ErrorLogItem | null): string {
+  if (!item) return '';
+  const anyItem = item as Record<string, unknown>;
+  if (typeof anyItem.sourceName === 'string' && anyItem.sourceName.trim()) {
+    return anyItem.sourceName.trim();
+  }
+  const refs = Array.isArray(item.references) ? item.references : [];
+  const tagged = refs.find(
+    (r) => typeof r?.title === 'string' && r.title.startsWith(SOURCE_REF_PREFIX)
+  );
+  if (tagged) {
+    return tagged.title.slice(SOURCE_REF_PREFIX.length).trim();
+  }
+  return '';
+}
+
 export default function ErrorEntryForm({
   editingItem,
   customApiKey,
   onSaveSuccess,
   onCancelEdit,
 }: ErrorEntryFormProps) {
-  // Danh sách môn học (cho phép người dùng thêm môn mới ngay trên giao diện)
+  // 1. Danh sách môn học & chuyên đề nhỏ (Lưu bền vững trong localStorage, cho phép tự thêm / tự xoá)
   const [subjects, setSubjects] = useState<SubjectDefinition[]>(INITIAL_SUBJECTS);
   const [showAddSubject, setShowAddSubject] = useState(false);
   const [newSubjectName, setNewSubjectName] = useState('');
   const [newSubjectGroup, setNewSubjectGroup] = useState<SubjectGroup>('STEM');
 
+  // 2. Danh sách Nguồn đề / Bộ đề (Cho phép tự thêm / tự xoá ngay trong Khung 1)
+  const [savedSources, setSavedSources] = useState<string[]>([
+    'Bluebook Practice Test',
+    'Cambridge IELTS',
+    'Đề Thi Thử Sở / Trường',
+  ]);
+  const [sourceName, setSourceName] = useState<string>('');
+
   // KHUNG 1: WHAT
-  const [subjectId, setSubjectId] = useState<string>('math-thpt');
-  const [topic, setTopic] = useState<string>('Hàm số & Đạo hàm');
+  const [subjectId, setSubjectId] = useState<string>(
+    INITIAL_SUBJECTS[0]?.id || 'math-thpt'
+  );
+  const [topic, setTopic] = useState<string>(
+    INITIAL_SUBJECTS[0]?.defaultTopics?.[0] || 'Hàm số & Đạo hàm'
+  );
   const [questionFormat, setQuestionFormat] = useState<QuestionFormat>('MCQ_4');
   const [processBreakpoint, setProcessBreakpoint] =
     useState<ProcessBreakpoint>('STAGE_1_DECODE');
@@ -85,7 +125,7 @@ export default function ErrorEntryForm({
   const [correctSolution, setCorrectSolution] = useState<string>('');
   const [showLatexPreview, setShowLatexPreview] = useState<boolean>(true);
 
-  // ĐA PHƯƠNG TIỆN
+  // ĐA PHƯƠNG TIỆN & CHẾ ĐỘ ZOOM ẢNH ĐỀ BÀI TRONG FORM
   const [problemImageUrl, setProblemImageUrl] = useState<string | undefined>(
     undefined
   );
@@ -95,6 +135,9 @@ export default function ErrorEntryForm({
   const [activePasteSlot, setActivePasteSlot] = useState<'problem' | 'solution'>(
     'problem'
   );
+  const [imageInspectMode, setImageInspectMode] = useState<
+    'ANNOTATE' | 'ZOOM'
+  >('ANNOTATE');
   const [references, setReferences] = useState<ReferenceItem[]>([]);
 
   // KHUNG 2: WHY
@@ -115,6 +158,55 @@ export default function ErrorEntryForm({
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
+  // Khôi phục danh sách Môn học + Chuyên đề nhỏ + Nguồn đề đã lưu từ localStorage
+  useEffect(() => {
+    try {
+      const rawSubs = window.localStorage.getItem(LOCAL_SUBJECTS_STORAGE_KEY);
+      if (rawSubs) {
+        const parsedSubs = JSON.parse(rawSubs);
+        if (Array.isArray(parsedSubs) && parsedSubs.length > 0) {
+          setSubjects(parsedSubs);
+        }
+      }
+      const rawSources = window.localStorage.getItem(LOCAL_SOURCES_STORAGE_KEY);
+      if (rawSources) {
+        const parsedSources = JSON.parse(rawSources);
+        if (Array.isArray(parsedSources)) {
+          setSavedSources(parsedSources);
+        }
+      }
+    } catch {
+      // Bỏ qua nếu lỗi parse
+    }
+  }, []);
+
+  const persistSubjectsToStorage = useCallback(
+    (nextSubjects: SubjectDefinition[]) => {
+      setSubjects(nextSubjects);
+      try {
+        window.localStorage.setItem(
+          LOCAL_SUBJECTS_STORAGE_KEY,
+          JSON.stringify(nextSubjects)
+        );
+      } catch {
+        // Bỏ qua
+      }
+    },
+    []
+  );
+
+  const persistSourcesToStorage = useCallback((nextSources: string[]) => {
+    setSavedSources(nextSources);
+    try {
+      window.localStorage.setItem(
+        LOCAL_SOURCES_STORAGE_KEY,
+        JSON.stringify(nextSources)
+      );
+    } catch {
+      // Bỏ qua
+    }
+  }, []);
+
   const selectedSubject =
     subjects.find((s) => s.id === subjectId) || subjects[0];
 
@@ -123,6 +215,7 @@ export default function ErrorEntryForm({
     if (!editingItem) return;
     setSubjectId(editingItem.subjectId);
     setTopic(editingItem.topic);
+    setSourceName(extractSourceFromItem(editingItem));
     setQuestionFormat(editingItem.questionFormat);
     setProcessBreakpoint(editingItem.processBreakpoint);
     setDifficulty(editingItem.difficulty);
@@ -132,7 +225,12 @@ export default function ErrorEntryForm({
     setCorrectSolution(editingItem.correctSolution);
     setProblemImageUrl(editingItem.problemImageUrl);
     setSolutionImageUrl(editingItem.solutionImageUrl);
-    setReferences(editingItem.references || []);
+    setReferences(
+      (editingItem.references || []).filter(
+        (r) =>
+          !(typeof r?.title === 'string' && r.title.startsWith(SOURCE_REF_PREFIX))
+      )
+    );
     setWhyCodes(editingItem.whyCodes);
     setWhyCustomNotes(editingItem.whyCustomNotes);
     setIfTrigger(editingItem.ifTrigger);
@@ -142,25 +240,79 @@ export default function ErrorEntryForm({
     setTwinQuestions(editingItem.twinQuestions || []);
   }, [editingItem]);
 
-  // Chọn hoặc bỏ chọn mã lỗi WHY, đồng thời gợi ý quy tắc NẾU-THÌ nếu ô đang trống
-  const toggleWhyCode = useCallback(
-    (code: WhyCode) => {
-      setWhyCodes((prev) => {
-        const exists = prev.includes(code);
-        const next = exists ? prev.filter((c) => c !== code) : [...prev, code];
+  // --- HÀM TỰ GHI / TỰ XOÁ CHUYÊN ĐỀ NHỎ TRỰC TIẾP TRONG KHUNG 1 ---
+  const handleSaveCurrentTopicToChips = useCallback(() => {
+    const cleanTopic = topic.trim();
+    if (!cleanTopic) return;
+    const nextSubjects = subjects.map((sub) => {
+      if (sub.id !== selectedSubject.id) return sub;
+      const exists = sub.defaultTopics.includes(cleanTopic);
+      if (exists) return sub;
+      return {
+        ...sub,
+        defaultTopics: [cleanTopic, ...sub.defaultTopics],
+      };
+    });
+    persistSubjectsToStorage(nextSubjects);
+  }, [persistSubjectsToStorage, selectedSubject.id, subjects, topic]);
 
-        if (!exists) {
-          const def = WHY_DICTIONARY.find((d) => d.code === code);
-          if (def) {
-            setIfTrigger((currIf) => currIf.trim() || def.defaultIfTrigger);
-            setThenAction((currThen) => currThen.trim() || def.defaultThenAction);
-          }
-        }
-        return next.length > 0 ? next : [code];
+  const handleDeleteTopicChip = useCallback(
+    (topicToDelete: string) => {
+      const nextSubjects = subjects.map((sub) => {
+        if (sub.id !== selectedSubject.id) return sub;
+        const filtered = sub.defaultTopics.filter((t) => t !== topicToDelete);
+        return {
+          ...sub,
+          defaultTopics: filtered,
+        };
       });
+      persistSubjectsToStorage(nextSubjects);
+      if (topic === topicToDelete) {
+        const remaining =
+          nextSubjects.find((s) => s.id === selectedSubject.id)
+            ?.defaultTopics || [];
+        setTopic(remaining[0] || '');
+      }
     },
-    []
+    [persistSubjectsToStorage, selectedSubject.id, subjects, topic]
   );
+
+  // --- HÀM TỰ GHI / TỰ XOÁ NGUỒN ĐỀ TRỰC TIẾP TRONG KHUNG 1 ---
+  const handleSaveCurrentSourceToChips = useCallback(() => {
+    const cleanSource = sourceName.trim();
+    if (!cleanSource) return;
+    if (!savedSources.includes(cleanSource)) {
+      persistSourcesToStorage([cleanSource, ...savedSources]);
+    }
+  }, [persistSourcesToStorage, savedSources, sourceName]);
+
+  const handleDeleteSourceChip = useCallback(
+    (sourceToDelete: string) => {
+      const next = savedSources.filter((s) => s !== sourceToDelete);
+      persistSourcesToStorage(next);
+      if (sourceName === sourceToDelete) {
+        setSourceName('');
+      }
+    },
+    [persistSourcesToStorage, savedSources, sourceName]
+  );
+
+  // Chọn hoặc bỏ chọn mã lỗi WHY
+  const toggleWhyCode = useCallback((code: WhyCode) => {
+    setWhyCodes((prev) => {
+      const exists = prev.includes(code);
+      const next = exists ? prev.filter((c) => c !== code) : [...prev, code];
+
+      if (!exists) {
+        const def = WHY_DICTIONARY.find((d) => d.code === code);
+        if (def) {
+          setIfTrigger((currIf) => currIf.trim() || def.defaultIfTrigger);
+          setThenAction((currThen) => currThen.trim() || def.defaultThenAction);
+        }
+      }
+      return next.length > 0 ? next : [code];
+    });
+  }, []);
 
   const toggleHowAction = (code: HowActionCode) => {
     setHowActions((prev) =>
@@ -176,18 +328,19 @@ export default function ErrorEntryForm({
       newSubjectGroup === 'STEM'
         ? 'Tự nhiên & Định lượng'
         : newSubjectGroup === 'LANGUAGE'
-        ? 'Ngôn ngữ & Học thuật'
-        : 'Khoa học Xã hội';
+          ? 'Ngôn ngữ & Học thuật'
+          : 'Khoa học Xã hội';
 
     const newSub: SubjectDefinition = {
       id,
       name: newSubjectName.trim(),
       group: newSubjectGroup,
       groupLabel,
-      defaultTopics: ['Chuyên đề 1', 'Chuyên đề 2', 'Đề thi thử'],
+      defaultTopics: ['Chuyên đề 1', 'Chuyên đề 2'],
     };
 
-    setSubjects((prev) => [...prev, newSub]);
+    const nextSubjects = [...subjects, newSub];
+    persistSubjectsToStorage(nextSubjects);
     setSubjectId(id);
     setTopic('Chuyên đề 1');
     setNewSubjectName('');
@@ -247,7 +400,6 @@ export default function ErrorEntryForm({
         return;
       }
 
-      // Kiểm tra chống ghi lời hứa sáo rỗng
       const combinedHow = `${ifTrigger} ${thenAction}`.toLowerCase();
       const foundVague = VAGUE_FORBIDDEN_PHRASES.find(
         (phrase) =>
@@ -260,6 +412,39 @@ export default function ErrorEntryForm({
         return;
       }
 
+      // Tự động lưu Chuyên đề nhỏ & Nguồn đề mới vào danh sách chip nếu chưa có
+      const cleanTopic = topic.trim() || 'Chuyên đề chung';
+      const cleanSource = sourceName.trim();
+
+      if (cleanTopic && !selectedSubject.defaultTopics.includes(cleanTopic)) {
+        const nextSubjects = subjects.map((sub) =>
+          sub.id === selectedSubject.id
+            ? { ...sub, defaultTopics: [cleanTopic, ...sub.defaultTopics] }
+            : sub
+        );
+        persistSubjectsToStorage(nextSubjects);
+      }
+
+      if (cleanSource && !savedSources.includes(cleanSource)) {
+        persistSourcesToStorage([cleanSource, ...savedSources]);
+      }
+
+      // Đóng gói Nguồn đề vào references để đồng bộ 100% với SQLite & Supabase
+      const cleanUserRefs = references.filter(
+        (r) =>
+          !(typeof r?.title === 'string' && r.title.startsWith(SOURCE_REF_PREFIX))
+      );
+      const finalReferences: ReferenceItem[] = cleanSource
+        ? [
+            {
+              id: `src_${Date.now()}`,
+              title: `${SOURCE_REF_PREFIX}${cleanSource}`,
+              type: 'BOOK',
+            },
+            ...cleanUserRefs,
+          ]
+        : cleanUserRefs;
+
       setIsSaving(true);
       try {
         const payload = {
@@ -268,7 +453,8 @@ export default function ErrorEntryForm({
           subjectId: selectedSubject.id,
           subjectName: selectedSubject.name,
           subjectGroup: selectedSubject.group,
-          topic,
+          topic: cleanTopic,
+          sourceName: cleanSource,
           questionFormat,
           processBreakpoint,
           difficulty,
@@ -278,7 +464,7 @@ export default function ErrorEntryForm({
           correctSolution,
           problemImageUrl,
           solutionImageUrl,
-          references,
+          references: finalReferences,
           whyCodes,
           whyCustomNotes,
           ifTrigger,
@@ -301,11 +487,15 @@ export default function ErrorEntryForm({
         const data = await res.json();
         if (data.ok && data.item) {
           onSaveSuccess(
-            data.item,
+            {
+              ...data.item,
+              topic: cleanTopic,
+              sourceName: cleanSource,
+              references: finalReferences,
+            },
             triggerTwinModalAfter || howActions.includes('H3')
           );
 
-          // Nếu là thêm mới thì reset form sạch sẽ
           if (!editingItem) {
             setQuestionText('');
             setMyWrongStep('');
@@ -329,9 +519,15 @@ export default function ErrorEntryForm({
       problemImageUrl,
       ifTrigger,
       thenAction,
-      editingItem,
-      selectedSubject,
       topic,
+      sourceName,
+      selectedSubject,
+      subjects,
+      persistSubjectsToStorage,
+      savedSources,
+      persistSourcesToStorage,
+      references,
+      editingItem,
       questionFormat,
       processBreakpoint,
       difficulty,
@@ -339,7 +535,6 @@ export default function ErrorEntryForm({
       myWrongStep,
       correctSolution,
       solutionImageUrl,
-      references,
       whyCodes,
       whyCustomNotes,
       howActions,
@@ -349,7 +544,7 @@ export default function ErrorEntryForm({
     ]
   );
 
-  // Phím tắt toàn cục trong Form: 1-9 chọn nhanh tag WHY (khi không focus ô chữ) và Cmd+Enter lưu nhanh
+  // Phím tắt toàn cục trong Form
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -383,10 +578,10 @@ export default function ErrorEntryForm({
 
   return (
     <div className="space-y-5">
-      {/* Thanh trạng thái trên cùng của Trạm Nhập Lỗi */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-botanical-border bg-botanical-surface px-4 py-3 shadow-paper">
+      {/* Thanh trạng thái trên cùng của Trạm Nhập Lỗi (Flat 2D) */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-botanical-border bg-botanical-surface px-4 py-3">
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-botanical-sage text-white">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-botanical-sage bg-botanical-sage text-white">
             <Layers className="h-5 w-5" />
           </div>
           <div>
@@ -438,7 +633,7 @@ export default function ErrorEntryForm({
             type="button"
             onClick={() => void handleSaveRecord(false)}
             disabled={isSaving}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-botanical-sage px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:opacity-95 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-botanical-sage bg-botanical-sage px-4 py-1.5 text-xs font-semibold text-white transition hover:opacity-95 disabled:opacity-50"
           >
             <Save className="h-3.5 w-3.5" />
             {isSaving ? 'Đang lưu...' : 'Lưu vào Sổ Tay Nhận Thức (Cmd+Enter)'}
@@ -446,7 +641,6 @@ export default function ErrorEntryForm({
         </div>
       </div>
 
-      {/* Thông báo lỗi kiểm duyệt nếu có */}
       {validationError && (
         <div className="flex items-center gap-2 rounded-lg border border-botanical-terracotta bg-botanical-terracottaBg px-4 py-2.5 text-xs font-medium text-botanical-terracotta">
           <AlertTriangle className="h-4 w-4 shrink-0" />
@@ -457,7 +651,7 @@ export default function ErrorEntryForm({
       {/* BỐ CỤC 3 CỘT TRỤ CỘT: WHAT - WHY - HOW */}
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
         {/* ==================== KHUNG 1: WHAT (5/12 cột) ==================== */}
-        <div className="botanical-paper-card flex flex-col justify-between rounded-xl p-4 xl:col-span-5">
+        <div className="botanical-paper-card flex flex-col justify-between rounded-xl border border-botanical-border bg-botanical-surface p-4 xl:col-span-5">
           <div className="space-y-4">
             {/* Tiêu đề Khung 1 */}
             <div className="flex items-center justify-between border-b border-botanical-border pb-2.5">
@@ -466,7 +660,7 @@ export default function ErrorEntryForm({
                   KHUNG 1 • WHAT
                 </span>
                 <h3 className="mt-1 text-sm font-bold text-botanical-ink">
-                  Sai cái gì? Ở môn nào? Gãy ở bước nào?
+                  Sai cái gì? Ở môn nào? Thuộc nguồn đề nào?
                 </h3>
               </div>
               <button
@@ -478,7 +672,6 @@ export default function ErrorEntryForm({
               </button>
             </div>
 
-            {/* Form thêm môn học mới tùy chọn */}
             {showAddSubject && (
               <div className="rounded-lg border border-botanical-border bg-botanical-mossMist/60 p-2.5">
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
@@ -486,7 +679,7 @@ export default function ErrorEntryForm({
                     type="text"
                     value={newSubjectName}
                     onChange={(e) => setNewSubjectName(e.target.value)}
-                    placeholder="Tên môn mới (VD: AP Physics C, Tiếng Đức B2...)"
+                    placeholder="Tên môn mới (VD: AP Physics C, Tiếng Pháp...)"
                     className="rounded border border-botanical-border bg-botanical-surface px-2.5 py-1 text-xs sm:col-span-6"
                   />
                   <select
@@ -511,68 +704,181 @@ export default function ErrorEntryForm({
               </div>
             )}
 
-            {/* 1. Chọn Môn học & Chuyên đề */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-botanical-muted">
-                  Môn học
-                </label>
-                <select
-                  value={subjectId}
-                  onChange={(e) => {
-                    const nextId = e.target.value;
-                    setSubjectId(nextId);
-                    const sub = subjects.find((s) => s.id === nextId);
-                    if (sub && sub.defaultTopics.length > 0) {
-                      setTopic(sub.defaultTopics[0]);
-                    }
-                  }}
-                  className="w-full rounded-md border border-botanical-border bg-botanical-canvas px-2.5 py-1.5 text-xs font-semibold text-botanical-ink focus:border-botanical-sage focus:outline-none"
-                >
-                  {subjects.map((sub) => (
-                    <option key={sub.id} value={sub.id}>
-                      [{sub.groupLabel}] {sub.name}
-                    </option>
-                  ))}
-                </select>
+            {/* 1A. CHỌN MÔN HỌC & TỰ GHI / TỰ XOÁ CHUYÊN ĐỀ NHỎ */}
+            <div className="space-y-2.5 rounded-lg border border-botanical-border bg-botanical-canvas p-3">
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-12">
+                <div className="sm:col-span-5">
+                  <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-botanical-muted">
+                    Môn học
+                  </label>
+                  <select
+                    value={subjectId}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setSubjectId(nextId);
+                      const sub = subjects.find((s) => s.id === nextId);
+                      if (sub && sub.defaultTopics.length > 0) {
+                        setTopic(sub.defaultTopics[0]);
+                      } else {
+                        setTopic('');
+                      }
+                    }}
+                    className="w-full rounded-md border border-botanical-border bg-botanical-surface px-2.5 py-1.5 text-xs font-semibold text-botanical-ink focus:border-botanical-sage focus:outline-none"
+                  >
+                    {subjects.map((sub) => (
+                      <option key={sub.id} value={sub.id}>
+                        [{sub.groupLabel}] {sub.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="sm:col-span-7">
+                  <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-botanical-muted">
+                    Chuyên đề nhỏ (Tự gõ rồi bấm + để lưu tag)
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={topic}
+                      onChange={(e) => setTopic(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleSaveCurrentTopicToChips();
+                        }
+                      }}
+                      placeholder="Tự gõ tên chuyên đề nhỏ..."
+                      className="flex-1 rounded-md border border-botanical-border bg-botanical-surface px-2.5 py-1.5 text-xs font-semibold text-botanical-ink focus:border-botanical-sage focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSaveCurrentTopicToChips}
+                      title="Lưu chuyên đề đang gõ vào danh sách bấm nhanh bên dưới"
+                      className="inline-flex shrink-0 items-center gap-1 rounded-md border border-botanical-sage bg-botanical-sage px-2.5 py-1.5 text-xs font-bold text-white hover:opacity-90"
+                    >
+                      <Plus className="h-3.5 w-3.5" /> Lưu
+                    </button>
+                  </div>
+                </div>
               </div>
 
-              <div>
-                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-botanical-muted">
-                  Chuyên đề / Dạng bài
-                </label>
-                <input
-                  type="text"
-                  list="subject-topics-datalist"
-                  value={topic}
-                  onChange={(e) => setTopic(e.target.value)}
-                  placeholder="Chọn hoặc gõ chuyên đề..."
-                  className="w-full rounded-md border border-botanical-border bg-botanical-canvas px-2.5 py-1.5 text-xs text-botanical-ink focus:border-botanical-sage focus:outline-none"
-                />
-                <datalist id="subject-topics-datalist">
-                  {selectedSubject.defaultTopics.map((t) => (
-                    <option key={t} value={t} />
-                  ))}
-                </datalist>
+              {/* Danh sách Chip Chuyên đề nhỏ: Bấm chữ để chọn, bấm × để xoá */}
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                {selectedSubject.defaultTopics.length === 0 ? (
+                  <span className="text-[11px] italic text-botanical-muted">
+                    Môn này chưa có chuyên đề nào. Hãy gõ vào ô trên rồi bấm &ldquo;+ Lưu&rdquo;.
+                  </span>
+                ) : (
+                  selectedSubject.defaultTopics.map((t) => {
+                    const isSelected = topic === t;
+                    return (
+                      <div
+                        key={t}
+                        className={`inline-flex items-center rounded-md border text-[11px] font-medium transition ${
+                          isSelected
+                            ? 'border-botanical-sage bg-botanical-sage text-white'
+                            : 'border-botanical-border bg-botanical-surface text-botanical-ink hover:border-botanical-sage'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setTopic(t)}
+                          className="px-2 py-0.5 font-semibold"
+                        >
+                          {t}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTopicChip(t)}
+                          title={`Xoá chuyên đề "${t}"`}
+                          className={`border-l px-1.5 py-0.5 ${
+                            isSelected
+                              ? 'border-white/30 text-white hover:bg-botanical-terracotta'
+                              : 'border-botanical-border text-botanical-muted hover:text-botanical-terracotta'
+                          }`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
 
-            {/* Thẻ bấm nhanh Chuyên đề của môn đang chọn */}
-            <div className="flex flex-wrap gap-1.5">
-              {selectedSubject.defaultTopics.map((t) => (
+            {/* 1B. NGUỒN ĐỀ / BỘ ĐỀ (ĐỂ GHÉP CÁC CÂU CÙNG NGUỒN THÀNH 1 KHU) */}
+            <div className="space-y-2 rounded-lg border border-botanical-border bg-botanical-canvas p-3">
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-botanical-sage">
+                  <FolderKanban className="h-3.5 w-3.5" />
+                  Nguồn đề / Bộ đề (Tự động gom các câu cùng nguồn thành 1 khu)
+                </label>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  value={sourceName}
+                  onChange={(e) => setSourceName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleSaveCurrentSourceToChips();
+                    }
+                  }}
+                  placeholder="Gõ tên đề (VD: Bluebook Test 5, Cam 19 Test 2, Đề Lý Sở HN)..."
+                  className="flex-1 rounded-md border border-botanical-border bg-botanical-surface px-2.5 py-1.5 text-xs font-semibold text-botanical-ink focus:border-botanical-sage focus:outline-none"
+                />
                 <button
-                  key={t}
                   type="button"
-                  onClick={() => setTopic(t)}
-                  className={`rounded-md border px-2 py-0.5 text-[11px] font-medium transition ${
-                    topic === t
-                      ? 'border-botanical-sage bg-botanical-chipBg text-botanical-chipText'
-                      : 'border-botanical-border bg-botanical-canvas text-botanical-muted hover:text-botanical-ink'
-                  }`}
+                  onClick={handleSaveCurrentSourceToChips}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-md border border-botanical-terracotta bg-botanical-terracotta px-2.5 py-1.5 text-xs font-bold text-white"
                 >
-                  {t}
+                  <Plus className="h-3.5 w-3.5" /> Lưu Nguồn
                 </button>
-              ))}
+              </div>
+
+              {/* Danh sách Chip Nguồn đề: Bấm để chọn, bấm × để xoá */}
+              {savedSources.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                  {savedSources.map((src) => {
+                    const isSelected = sourceName === src;
+                    return (
+                      <div
+                        key={src}
+                        className={`inline-flex items-center rounded-md border text-[11px] font-medium transition ${
+                          isSelected
+                            ? 'border-botanical-terracotta bg-botanical-terracotta text-white'
+                            : 'border-botanical-border bg-botanical-surface text-botanical-ink hover:border-botanical-terracotta'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSourceName((prev) => (prev === src ? '' : src))
+                          }
+                          className="px-2 py-0.5 font-semibold"
+                        >
+                          📚 {src}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteSourceChip(src)}
+                          title={`Xoá nguồn "${src}"`}
+                          className={`border-l px-1.5 py-0.5 ${
+                            isSelected
+                              ? 'border-white/30 text-white'
+                              : 'border-botanical-border text-botanical-muted hover:text-botanical-terracotta'
+                          }`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* 2. Định dạng câu hỏi */}
@@ -590,7 +896,7 @@ export default function ErrorEntryForm({
                       onClick={() => setQuestionFormat(fmt.id)}
                       className={`rounded-md border px-2.5 py-1.5 text-left transition ${
                         active
-                          ? 'border-botanical-sage bg-botanical-chipBg text-botanical-chipText shadow-sm'
+                          ? 'border-botanical-sage bg-botanical-chipBg text-botanical-chipText'
                           : 'border-botanical-border bg-botanical-canvas text-botanical-ink hover:border-botanical-borderHover'
                       }`}
                     >
@@ -603,7 +909,7 @@ export default function ErrorEntryForm({
               </div>
             </div>
 
-            {/* 3. Điểm gãy trong quy trình tư duy (Process Breakpoint) */}
+            {/* 3. Điểm gãy trong quy trình tư duy */}
             <div>
               <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-botanical-muted">
                 Điểm gãy trong quy trình tư duy (Gãy ở đúng công đoạn nào?)
@@ -618,7 +924,7 @@ export default function ErrorEntryForm({
                       onClick={() => setProcessBreakpoint(bp.id)}
                       className={`flex flex-col justify-between rounded-md border p-2 text-left transition ${
                         active
-                          ? 'border-botanical-sage bg-botanical-chipBg text-botanical-chipText ring-1 ring-botanical-sage/30'
+                          ? 'border-botanical-sage bg-botanical-chipBg text-botanical-chipText'
                           : 'border-botanical-border bg-botanical-canvas text-botanical-ink hover:border-botanical-borderHover'
                       }`}
                     >
@@ -644,7 +950,7 @@ export default function ErrorEntryForm({
                       key={star}
                       type="button"
                       onClick={() => setDifficulty(star)}
-                      className="p-0.5 transition hover:scale-110"
+                      className="p-0.5 transition"
                     >
                       <Star
                         className={`h-4 w-4 ${
@@ -673,26 +979,26 @@ export default function ErrorEntryForm({
                       onClick={() => setTimePressure(tp.id)}
                       className={`rounded border px-2 py-0.5 text-[11px] font-medium transition ${
                         timePressure === tp.id
-                          ? tp.badgeColor + ' font-semibold ring-1 ring-current'
+                          ? tp.badgeColor + ' font-semibold'
                           : 'border-botanical-border bg-botanical-surface text-botanical-muted'
                       }`}
                     >
                       {tp.id === 'RELAXED'
                         ? 'Thong thả'
                         : tp.id === 'EXAM_PACE'
-                        ? 'Đúng tốc độ thi'
-                        : 'Hoảng loạn (<1p)'}
+                          ? 'Đúng tốc độ thi'
+                          : 'Hoảng loạn (<1p)'}
                     </button>
                   ))}
                 </div>
               </div>
             </div>
 
-            {/* 5. Ô nhập Đề bài, Bước làm sai & Lời giải chuẩn (hỗ trợ LaTeX & Code) */}
+            {/* 5. Ô nhập Đề bài, Bước làm sai & Lời giải chuẩn */}
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <label className="text-[11px] font-semibold uppercase tracking-wider text-botanical-muted">
-                  Nội dung Đề bài & Biểu thức ($\LaTeX$ dùng $...$)
+                  Nội dung Đề bài &amp; Biểu thức ($\LaTeX$ dùng $...$)
                 </label>
                 <button
                   type="button"
@@ -740,7 +1046,6 @@ export default function ErrorEntryForm({
                 </div>
               </div>
 
-              {/* Khung xem trước công thức KaTeX trực tiếp */}
               {showLatexPreview &&
                 (questionText.trim() ||
                   myWrongStep.trim() ||
@@ -771,33 +1076,142 @@ export default function ErrorEntryForm({
                 )}
             </div>
 
-            {/* 6. Hai Ô Dán Ảnh Chụp Màn Hình (Cmd+V) + Bút Đỏ Đất Nung */}
+            {/* 6. Hai Ô Dán Ảnh Chụp Màn Hình (Cmd+V) + Chuyển Đổi Bút Đỏ / Zoom Soi Đề */}
             <div className="space-y-2.5">
-              <CanvasAnnotator
-                slot="problem"
-                title="Ô Ảnh 1: Đề bài & Bài làm bị sai của tôi"
-                subtitle="Dán ảnh chụp màn hình đề/nháp và dùng Bút Đỏ Đất Nung khoanh đúng dòng bị sai"
-                imageUrl={problemImageUrl}
-                isActivePasteTarget={activePasteSlot === 'problem'}
-                onSelectAsPasteTarget={() => setActivePasteSlot('problem')}
-                onImageSaved={(url) => setProblemImageUrl(url)}
-              />
+              {(problemImageUrl || solutionImageUrl) && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-botanical-border bg-botanical-canvas px-3 py-1.5 text-xs">
+                  <span className="font-mono text-[10px] font-bold uppercase text-botanical-sage">
+                    Chế độ tương tác ảnh trong Form:
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setImageInspectMode('ANNOTATE')}
+                      className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[11px] font-bold ${
+                        imageInspectMode === 'ANNOTATE'
+                          ? 'border-botanical-terracotta bg-botanical-terracotta text-white'
+                          : 'border-botanical-border bg-botanical-surface text-botanical-ink'
+                      }`}
+                    >
+                      <PenTool className="h-3 w-3" /> Khoanh Bút Đỏ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setImageInspectMode('ZOOM')}
+                      className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[11px] font-bold ${
+                        imageInspectMode === 'ZOOM'
+                          ? 'border-botanical-sage bg-botanical-sage text-white'
+                          : 'border-botanical-border bg-botanical-surface text-botanical-ink'
+                      }`}
+                    >
+                      <Search className="h-3 w-3" /> Zoom In / Out Đề Bài
+                    </button>
+                  </div>
+                </div>
+              )}
 
-              <CanvasAnnotator
-                slot="solution"
-                title="Ô Ảnh 2: Lời giải chuẩn / Đáp án đúng"
-                subtitle="Dán ảnh lời giải mẫu của thầy cô hoặc bảng đáp án chi tiết"
-                imageUrl={solutionImageUrl}
-                isActivePasteTarget={activePasteSlot === 'solution'}
-                onSelectAsPasteTarget={() => setActivePasteSlot('solution')}
-                onImageSaved={(url) => setSolutionImageUrl(url)}
-              />
+              {imageInspectMode === 'ZOOM' &&
+              (problemImageUrl || solutionImageUrl) ? (
+                <div className="space-y-2.5">
+                  {[
+                    {
+                      label: 'Ô Ảnh 1 (Đề bài): Cuộn chuột để Zoom In / Out',
+                      url: problemImageUrl,
+                    },
+                    {
+                      label: 'Ô Ảnh 2 (Lời giải): Cuộn chuột để Zoom In / Out',
+                      url: solutionImageUrl,
+                    },
+                  ]
+                    .filter((slotItem) => Boolean(slotItem.url))
+                    .map((slotItem) => (
+                      <div
+                        key={slotItem.label}
+                        className="rounded-lg border border-botanical-border bg-botanical-canvas p-2.5"
+                      >
+                        <TransformWrapper
+                          initialScale={1}
+                          minScale={0.5}
+                          maxScale={5}
+                          wheel={{ step: 0.15 }}
+                        >
+                          {({ zoomIn, zoomOut, resetTransform }) => (
+                            <>
+                              <div className="mb-1.5 flex items-center justify-between border-b border-botanical-border pb-1">
+                                <span className="font-mono text-[10px] font-bold text-botanical-sage">
+                                  {slotItem.label}
+                                </span>
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => zoomIn(0.3)}
+                                    className="rounded border border-botanical-border bg-botanical-surface px-1.5 py-0.5 font-mono text-[10px] font-bold"
+                                  >
+                                    <ZoomIn className="inline h-3 w-3" /> +
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => zoomOut(0.3)}
+                                    className="rounded border border-botanical-border bg-botanical-surface px-1.5 py-0.5 font-mono text-[10px] font-bold"
+                                  >
+                                    <ZoomOut className="inline h-3 w-3" /> -
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => resetTransform()}
+                                    className="rounded border border-botanical-border bg-botanical-surface px-1.5 py-0.5 font-mono text-[10px] font-bold"
+                                  >
+                                    <RotateCcw className="inline h-3 w-3" /> 100%
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="overflow-hidden rounded border border-botanical-border bg-botanical-surface">
+                                <TransformComponent
+                                  wrapperClass="!w-full !max-h-[340px] cursor-grab active:cursor-grabbing"
+                                  contentClass="!w-full flex justify-center"
+                                >
+                                  <img
+                                    src={slotItem.url}
+                                    alt={slotItem.label}
+                                    className="max-h-[320px] w-auto object-contain select-none p-1"
+                                  />
+                                </TransformComponent>
+                              </div>
+                            </>
+                          )}
+                        </TransformWrapper>
+                      </div>
+                    ))}
+                </div>
+              ) : (
+                <>
+                  <CanvasAnnotator
+                    slot="problem"
+                    title="Ô Ảnh 1: Đề bài & Bài làm bị sai của tôi"
+                    subtitle="Dán ảnh chụp màn hình đề/nháp và dùng Bút Đỏ Đất Nung khoanh đúng dòng bị sai"
+                    imageUrl={problemImageUrl}
+                    isActivePasteTarget={activePasteSlot === 'problem'}
+                    onSelectAsPasteTarget={() => setActivePasteSlot('problem')}
+                    onImageSaved={(url) => setProblemImageUrl(url)}
+                  />
+
+                  <CanvasAnnotator
+                    slot="solution"
+                    title="Ô Ảnh 2: Lời giải chuẩn / Đáp án đúng"
+                    subtitle="Dán ảnh lời giải mẫu của thầy cô hoặc bảng đáp án chi tiết"
+                    imageUrl={solutionImageUrl}
+                    isActivePasteTarget={activePasteSlot === 'solution'}
+                    onSelectAsPasteTarget={() => setActivePasteSlot('solution')}
+                    onImageSaved={(url) => setSolutionImageUrl(url)}
+                  />
+                </>
+              )}
             </div>
           </div>
         </div>
 
         {/* ==================== KHUNG 2: WHY (4/12 cột) ==================== */}
-        <div className="botanical-paper-card flex flex-col justify-between rounded-xl p-4 xl:col-span-4">
+        <div className="botanical-paper-card flex flex-col justify-between rounded-xl border border-botanical-border bg-botanical-surface p-4 xl:col-span-4">
           <div className="space-y-3.5">
             <div className="border-b border-botanical-border pb-2.5">
               <span className="inline-block rounded bg-botanical-terracotta px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-white">
@@ -808,11 +1222,13 @@ export default function ErrorEntryForm({
               </h3>
               <p className="text-[11px] text-botanical-muted">
                 Chọn 1 hoặc nhiều nguyên nhân. Nhóm A sẽ được tính vào chỉ số{' '}
-                <strong className="text-botanical-terracotta">&ldquo;Thuế Ẩu&rdquo;</strong>.
+                <strong className="text-botanical-terracotta">
+                  &ldquo;Thuế Ẩu&rdquo;
+                </strong>
+                .
               </p>
             </div>
 
-            {/* Render 4 nhóm A, B, C, D với bảng màu ngữ nghĩa chuẩn */}
             {(
               [
                 'GROUP_A_CARELESS',
@@ -854,7 +1270,7 @@ export default function ErrorEntryForm({
                           onClick={() => toggleWhyCode(why.code)}
                           className={`group flex w-full items-start justify-between gap-2 rounded-md border px-2.5 py-1.5 text-left transition ${
                             isSelected
-                              ? 'border-botanical-sage bg-botanical-chipBg text-botanical-chipText shadow-sm ring-1 ring-botanical-sage'
+                              ? 'border-botanical-sage bg-botanical-chipBg text-botanical-chipText'
                               : 'border-botanical-border bg-botanical-surface text-botanical-ink hover:border-botanical-borderHover'
                           }`}
                         >
@@ -885,7 +1301,6 @@ export default function ErrorEntryForm({
               );
             })}
 
-            {/* Ghi chú bổ sung chi tiết nguyên nhân */}
             <div>
               <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-botanical-muted">
                 Ghi chú bối cảnh / cảm xúc lúc nhầm lẫn:
@@ -902,7 +1317,7 @@ export default function ErrorEntryForm({
         </div>
 
         {/* ==================== KHUNG 3: HOW (3/12 cột) ==================== */}
-        <div className="botanical-paper-card flex flex-col justify-between rounded-xl p-4 xl:col-span-3">
+        <div className="botanical-paper-card flex flex-col justify-between rounded-xl border border-botanical-border bg-botanical-surface p-4 xl:col-span-3">
           <div className="space-y-4">
             <div className="border-b border-botanical-border pb-2.5">
               <span className="inline-block rounded bg-botanical-matcha px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-white">
@@ -912,11 +1327,11 @@ export default function ErrorEntryForm({
                 Phác đồ Hành động Chống Lặp Lại
               </h3>
               <p className="text-[11px] text-botanical-muted">
-                Cấm ghi câu vô nghĩa như <em>&ldquo;Lần sau sẽ cẩn thận hơn&rdquo;</em>.
+                Cấm ghi câu vô nghĩa như{' '}
+                <em>&ldquo;Lần sau sẽ cẩn thận hơn&rdquo;</em>.
               </p>
             </div>
 
-            {/* Kết quả Khám Nghiệm AI Trực Tiếp (nếu đã bấm nút AI) */}
             {aiAutopsy && (
               <div className="rounded-lg border border-botanical-terracotta/60 bg-botanical-terracottaBg/60 p-3 text-xs">
                 <div className="mb-1.5 flex items-center justify-between">
@@ -940,11 +1355,15 @@ export default function ErrorEntryForm({
                 <div className="space-y-1 rounded border border-botanical-border bg-botanical-surface p-2 text-[11px]">
                   <div className="text-botanical-terracotta">
                     <strong>Bước sai:</strong>{' '}
-                    <MathText content={aiAutopsy.so_sanh_buoc_giai.buoc_sai_cua_ban} />
+                    <MathText
+                      content={aiAutopsy.so_sanh_buoc_giai.buoc_sai_cua_ban}
+                    />
                   </div>
                   <div className="text-botanical-matcha">
                     <strong>Tư duy chuẩn:</strong>{' '}
-                    <MathText content={aiAutopsy.so_sanh_buoc_giai.tu_duy_chuan_xac} />
+                    <MathText
+                      content={aiAutopsy.so_sanh_buoc_giai.tu_duy_chuan_xac}
+                    />
                   </div>
                 </div>
               </div>
@@ -1003,7 +1422,7 @@ export default function ErrorEntryForm({
             {/* 2. Danh sách Hành động Khắc phục [H1] -> [H5] */}
             <div>
               <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-botanical-muted">
-                Chế độ Hậu kiểm & Phục thù (Actionable Protocols)
+                Chế độ Hậu kiểm &amp; Phục thù (Actionable Protocols)
               </label>
               <div className="space-y-1.5">
                 {HOW_ACTIONS_DICTIONARY.map((act) => {
@@ -1015,13 +1434,15 @@ export default function ErrorEntryForm({
                       onClick={() => toggleHowAction(act.code)}
                       className={`flex w-full items-start gap-2 rounded-md border p-2 text-left transition ${
                         active
-                          ? 'border-botanical-matcha bg-botanical-matchaBg text-botanical-ink shadow-sm'
+                          ? 'border-botanical-matcha bg-botanical-matchaBg text-botanical-ink'
                           : 'border-botanical-border bg-botanical-canvas text-botanical-muted hover:text-botanical-ink'
                       }`}
                     >
                       <CheckCircle2
                         className={`mt-0.5 h-4 w-4 shrink-0 ${
-                          active ? 'text-botanical-matcha' : 'text-botanical-border'
+                          active
+                            ? 'text-botanical-matcha'
+                            : 'text-botanical-border'
                         }`}
                       />
                       <div>
@@ -1038,26 +1459,28 @@ export default function ErrorEntryForm({
               </div>
             </div>
 
-            {/* Nút Lưu & Sinh ngay 2 Bài Tập Sinh Đôi để Phục Thù */}
+            {/* Nút Lưu & Sinh ngay 2 Bài Tập Sinh Đôi */}
             <div className="space-y-2 pt-2">
               <button
                 type="button"
                 onClick={() => void handleSaveRecord(true)}
                 disabled={isSaving}
-                className="flex w-full items-center justify-center gap-2 rounded-lg border border-botanical-sage bg-botanical-chipBg px-3 py-2.5 text-xs font-bold text-botanical-chipText shadow-sm transition hover:bg-botanical-sage hover:text-white"
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-botanical-sage bg-botanical-chipBg px-3 py-2.5 text-xs font-bold text-botanical-chipText transition hover:bg-botanical-sage hover:text-white"
               >
                 <ShieldAlert className="h-4 w-4" />
-                Lưu & Đẻ ngay 2 &ldquo;Bài Tập Sinh Đôi&rdquo; Giải Phục Thù
+                Lưu &amp; Đẻ ngay 2 &ldquo;Bài Tập Sinh Đôi&rdquo; Giải Phục Thù
               </button>
 
               <button
                 type="button"
                 onClick={() => void handleSaveRecord(false)}
                 disabled={isSaving}
-                className="flex w-full items-center justify-center gap-2 rounded-lg bg-botanical-sage px-3 py-2.5 text-xs font-bold text-white shadow-sm transition hover:opacity-95"
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-botanical-sage bg-botanical-sage px-3 py-2.5 text-xs font-bold text-white transition hover:opacity-95"
               >
                 <Save className="h-4 w-4" />
-                {isSaving ? 'Đang lưu vào SQLite...' : 'Lưu Bản Ghi Lỗi Sai (Cmd+Enter)'}
+                {isSaving
+                  ? 'Đang lưu vào SQLite...'
+                  : 'Lưu Bản Ghi Lỗi Sai (Cmd+Enter)'}
               </button>
             </div>
           </div>
