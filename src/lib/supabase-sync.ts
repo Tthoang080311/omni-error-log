@@ -136,7 +136,6 @@ export async function testSupabaseConnection(): Promise<{
   }
 }
 
-// Kéo toàn bộ bản ghi từ Supabase (Không phụ thuộc vào cột updated_at trên DB)
 export async function fetchAllLogsFromSupabase(): Promise<
   ErrorLogItem[] | null
 > {
@@ -157,7 +156,6 @@ export async function fetchAllLogsFromSupabase(): Promise<
     const rows = await res.json();
     if (!Array.isArray(rows)) return null;
 
-    // Khôi phục danh mục Chuyên đề nhỏ & Nguồn đề nếu có bản ghi Meta trên Cloud
     const metaRow = rows.find((r) => r?.id === TAXONOMY_META_ROW_ID);
     if (metaRow?.payload && typeof window !== 'undefined') {
       try {
@@ -174,7 +172,7 @@ export async function fetchAllLogsFromSupabase(): Promise<
           );
         }
       } catch {
-        // Bỏ qua lỗi ghi localStorage
+        // Bỏ qua
       }
     }
 
@@ -183,6 +181,7 @@ export async function fetchAllLogsFromSupabase(): Promise<
       .map((r) => {
         if (r.payload && typeof r.payload === 'object') {
           return {
+            ...r,
             ...r.payload,
             id: String(r.id || r.payload.id),
             updatedAt: String(
@@ -197,7 +196,6 @@ export async function fetchAllLogsFromSupabase(): Promise<
         return r as ErrorLogItem;
       });
 
-    // Sắp xếp trực tiếp bằng JS theo thời gian mới nhất
     return parsedItems.sort(
       (a, b) =>
         new Date(b.updatedAt || b.createdAt || 0).getTime() -
@@ -208,7 +206,69 @@ export async function fetchAllLogsFromSupabase(): Promise<
   }
 }
 
-// Đẩy bản ghi lên Supabase kèm cơ chế Fallback tự động nếu bảng không có cột updated_at
+// Hàm nội bộ thử đẩy 1 mảng bản ghi với 3 cấp độ Fallback cấu trúc cột
+async function tryPostRowsWithFallback(
+  endpoint: string,
+  headers: HeadersInit,
+  items: ErrorLogItem[]
+): Promise<boolean> {
+  const nowIso = new Date().toISOString();
+
+  // Khử trùng lặp ID tuyệt đối trước khi gửi lên Postgres ON CONFLICT
+  const uniqueMap = new Map<string, ErrorLogItem>();
+  items.forEach((it) => {
+    if (it && it.id) uniqueMap.set(String(it.id), it);
+  });
+  const uniqueItems = Array.from(uniqueMap.values());
+  if (uniqueItems.length === 0) return true;
+
+  // Cấp 1: Chuẩn { id, payload, updated_at }
+  const rowsStage1 = uniqueItems.map((it) => ({
+    id: String(it.id),
+    payload: it,
+    updated_at: it.updatedAt || nowIso,
+  }));
+  const res1 = await fetch(endpoint, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(rowsStage1),
+  }).catch(() => null);
+  if (res1?.ok) return true;
+
+  // Cấp 2: Bảng chỉ có { id, payload } (không có updated_at)
+  const rowsStage2 = uniqueItems.map((it) => ({
+    id: String(it.id),
+    payload: it,
+  }));
+  const res2 = await fetch(endpoint, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(rowsStage2),
+  }).catch(() => null);
+  if (res2?.ok) return true;
+
+  // Cấp 3: Bảng cũ có các cột phẳng snake_case đi kèm payload
+  const rowsStage3 = uniqueItems.map((it) => ({
+    id: String(it.id),
+    subject_id: it.subjectId || 'MATH',
+    subject_name: it.subjectName || 'Toán',
+    topic: it.topic || '',
+    question_text: it.questionText || '',
+    leitner_box: Number(it.leitnerBox || 1),
+    next_review_date: it.nextReviewDate || nowIso.slice(0, 10),
+    is_resolved: Boolean(it.isResolved),
+    payload: it,
+    updated_at: it.updatedAt || nowIso,
+  }));
+  const res3 = await fetch(endpoint, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(rowsStage3),
+  }).catch(() => null);
+
+  return Boolean(res3?.ok);
+}
+
 export async function upsertLogsToSupabase(
   itemsOrSingle: ErrorLogItem | ErrorLogItem[]
 ): Promise<boolean> {
@@ -216,43 +276,6 @@ export async function upsertLogsToSupabase(
   if (!cfg.isConfigured) return false;
 
   const list = Array.isArray(itemsOrSingle) ? itemsOrSingle : [itemsOrSingle];
-  const nowIso = new Date().toISOString();
-
-  const baseEntries: Array<{ id: string; payload: unknown; updated_at: string }> =
-    list
-      .filter((it) => it && it.id)
-      .map((it) => ({
-        id: String(it.id),
-        payload: it,
-        updated_at: it.updatedAt || nowIso,
-      }));
-
-  if (typeof window !== 'undefined') {
-    try {
-      const rawSubs = window.localStorage.getItem(
-        'OMNI_SUBJECTS_AND_TOPICS_V2'
-      );
-      const rawSources = window.localStorage.getItem(
-        'OMNI_CUSTOM_SOURCES_LIST_V1'
-      );
-      if (rawSubs || rawSources) {
-        baseEntries.push({
-          id: TAXONOMY_META_ROW_ID,
-          payload: {
-            subjects: rawSubs ? JSON.parse(rawSubs) : undefined,
-            sources: rawSources ? JSON.parse(rawSources) : undefined,
-            updatedAt: nowIso,
-          },
-          updated_at: nowIso,
-        });
-      }
-    } catch {
-      // Bỏ qua
-    }
-  }
-
-  if (baseEntries.length === 0) return true;
-
   const endpoint = `${cfg.url}/rest/v1/${encodeURIComponent(
     cfg.tableName
   )}?on_conflict=id`;
@@ -262,27 +285,41 @@ export async function upsertLogsToSupabase(
   );
 
   try {
-    // Lần 1: Thử đẩy đầy đủ { id, payload, updated_at }
-    const resWithTimestamp = await fetch(endpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(baseEntries),
-    });
+    // 1. Đẩy danh sách câu hỏi chính
+    const logsOk = await tryPostRowsWithFallback(endpoint, headers, list);
 
-    if (resWithTimestamp.ok) return true;
+    // 2. Đẩy tách riêng bản ghi Meta (Chuyên đề & Nguồn đề) để không bao giờ làm hỏng luồng câu hỏi
+    if (typeof window !== 'undefined') {
+      try {
+        const rawSubs = window.localStorage.getItem(
+          'OMNI_SUBJECTS_AND_TOPICS_V2'
+        );
+        const rawSources = window.localStorage.getItem(
+          'OMNI_CUSTOM_SOURCES_LIST_V1'
+        );
+        if (rawSubs || rawSources) {
+          const metaItem = {
+            id: TAXONOMY_META_ROW_ID,
+            subjectId: 'META',
+            subjectName: 'META',
+            topic: 'META',
+            questionText: 'META',
+            leitnerBox: 5,
+            isResolved: true,
+            subjects: rawSubs ? JSON.parse(rawSubs) : undefined,
+            sources: rawSources ? JSON.parse(rawSources) : undefined,
+            updatedAt: new Date().toISOString(),
+          } as unknown as ErrorLogItem;
+          void tryPostRowsWithFallback(endpoint, headers, [metaItem]).catch(
+            () => false
+          );
+        }
+      } catch {
+        // Bỏ qua lỗi Meta
+      }
+    }
 
-    // Lần 2 (Fallback): Nếu bảng trên Supabase không có cột updated_at, chỉ gửi { id, payload }
-    const rowsWithoutTimestamp = baseEntries.map(({ id, payload }) => ({
-      id,
-      payload,
-    }));
-    const resMinimal = await fetch(endpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(rowsWithoutTimestamp),
-    });
-
-    return resMinimal.ok;
+    return logsOk;
   } catch {
     return false;
   }
