@@ -1,110 +1,256 @@
 // File: src/lib/supabase-sync.ts
 import { ErrorLogItem } from '@/types/error-log';
 
-const SUPABASE_REST_URL =
-  process.env.NEXT_PUBLIC_SUPABASE_REST_URL ||
-  'https://igetygmsrksbhfhismat.supabase.co/rest/v1';
+export const STORAGE_SUPABASE_URL_KEY = 'OMNI_CUSTOM_SUPABASE_URL';
+export const STORAGE_SUPABASE_ANON_KEY = 'OMNI_CUSTOM_SUPABASE_ANON_KEY';
+export const STORAGE_SUPABASE_TABLE_KEY = 'OMNI_CUSTOM_SUPABASE_TABLE';
+export const TAXONOMY_META_ROW_ID = '__OMNI_TAXONOMY_META_V1__';
 
-const SUPABASE_ANON_KEY =
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlnZXR5Z21zcmtzYmhmaGlzbWF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIyODg5MTAsImV4cCI6MjEwNzg2NDkxMH0.KsK-fHAZrArAFzYgqXr96Ni9mClWxGJPGd9E88yCXD4';
-
-const LOCAL_MIRROR_KEY = 'OMNI_PERSISTENT_MIRROR_LOGS_V1';
-
-function readLocalMirror(): ErrorLogItem[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = window.localStorage.getItem(LOCAL_MIRROR_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+export interface SupabaseRuntimeConfig {
+  url: string;
+  anonKey: string;
+  tableName: string;
+  isConfigured: boolean;
 }
 
-function writeLocalMirror(items: ErrorLogItem[]) {
+export function getSupabaseRuntimeConfig(): SupabaseRuntimeConfig {
+  if (typeof window === 'undefined') {
+    const envUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+    const envKey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '').trim();
+    return {
+      url: envUrl.replace(/\/+$/, ''),
+      anonKey: envKey,
+      tableName: 'error_logs',
+      isConfigured: Boolean(envUrl && envKey),
+    };
+  }
+
+  const localUrl = (
+    window.localStorage.getItem(STORAGE_SUPABASE_URL_KEY) || ''
+  ).trim();
+  const localKey = (
+    window.localStorage.getItem(STORAGE_SUPABASE_ANON_KEY) || ''
+  ).trim();
+  const localTable = (
+    window.localStorage.getItem(STORAGE_SUPABASE_TABLE_KEY) || ''
+  ).trim();
+
+  const finalUrl = (
+    localUrl ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    ''
+  )
+    .trim()
+    .replace(/\/+$/, '');
+
+  const finalKey = (
+    localKey ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    ''
+  ).trim();
+
+  const finalTable = localTable || 'error_logs';
+
+  return {
+    url: finalUrl,
+    anonKey: finalKey,
+    tableName: finalTable,
+    isConfigured: Boolean(finalUrl && finalKey),
+  };
+}
+
+export function saveSupabaseRuntimeConfig(
+  url: string,
+  anonKey: string,
+  tableName = 'error_logs'
+): void {
   if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(LOCAL_MIRROR_KEY, JSON.stringify(items));
-  } catch {
-    // Bỏ qua nếu bộ nhớ trình duyệt đầy
-  }
+  window.localStorage.setItem(
+    STORAGE_SUPABASE_URL_KEY,
+    url.trim().replace(/\/+$/, '')
+  );
+  window.localStorage.setItem(STORAGE_SUPABASE_ANON_KEY, anonKey.trim());
+  window.localStorage.setItem(
+    STORAGE_SUPABASE_TABLE_KEY,
+    tableName.trim() || 'error_logs'
+  );
 }
 
-function getHeaders(prefer?: string): HeadersInit {
+function buildSupabaseHeaders(anonKey: string, prefer?: string): HeadersInit {
   const headers: Record<string, string> = {
-    apikey: SUPABASE_ANON_KEY,
-    Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    apikey: anonKey,
+    Authorization: `Bearer ${anonKey}`,
     'Content-Type': 'application/json',
   };
-  if (prefer) headers['Prefer'] = prefer;
+  if (prefer) {
+    headers.Prefer = prefer;
+  }
   return headers;
 }
 
-export async function fetchAllLogsFromSupabase(): Promise<ErrorLogItem[] | null> {
-  const mirrorLogs = readLocalMirror();
+export async function testSupabaseConnection(): Promise<{
+  ok: boolean;
+  message: string;
+  rowCount?: number;
+}> {
+  const cfg = getSupabaseRuntimeConfig();
+  if (!cfg.isConfigured) {
+    return {
+      ok: false,
+      message: 'Chưa nhập Supabase URL hoặc Anon Key.',
+    };
+  }
+
   try {
-    const res = await fetch(
-      `${SUPABASE_REST_URL}/omni_error_logs?select=payload&order=updated_at.desc`,
-      {
-        method: 'GET',
-        headers: getHeaders(),
-        cache: 'no-store',
-      }
-    );
+    const endpoint = `${cfg.url}/rest/v1/${encodeURIComponent(
+      cfg.tableName
+    )}?select=id&limit=1000`;
+    const res = await fetch(endpoint, {
+      method: 'GET',
+      headers: buildSupabaseHeaders(cfg.anonKey),
+      cache: 'no-store',
+    });
+
     if (!res.ok) {
-      return mirrorLogs.length > 0 ? mirrorLogs : null;
+      const errText = await res.text().catch(() => '');
+      return {
+        ok: false,
+        message: `Lỗi kết nối Supabase (${res.status}): ${errText || res.statusText}`,
+      };
     }
-    const rows: Array<{ payload: ErrorLogItem }> = await res.json();
-    const cloudLogs = rows.map((r) => r.payload);
 
-    // Hợp nhất giữa Cloud và bộ nhớ trình duyệt để không bao giờ mất bản ghi khi Vercel reset
-    const mergedMap = new Map<string, ErrorLogItem>();
-    mirrorLogs.forEach((item) => mergedMap.set(item.id, item));
-    cloudLogs.forEach((item) => mergedMap.set(item.id, item));
+    const rows = await res.json();
+    const count = Array.isArray(rows)
+      ? rows.filter((r) => r?.id !== TAXONOMY_META_ROW_ID).length
+      : 0;
+    return {
+      ok: true,
+      rowCount: count,
+      message: `Kết nối thành công! Đang có ${count} bản ghi trên bảng "${cfg.tableName}".`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: `Không thể gọi tới Supabase URL: ${(err as Error).message}`,
+    };
+  }
+}
 
-    const combined = Array.from(mergedMap.values()).sort(
-      (a, b) =>
-        new Date(b.createdAt || 0).getTime() -
-        new Date(a.createdAt || 0).getTime()
-    );
-    writeLocalMirror(combined);
-    return combined;
+export async function fetchAllLogsFromSupabase(): Promise<
+  ErrorLogItem[] | null
+> {
+  const cfg = getSupabaseRuntimeConfig();
+  if (!cfg.isConfigured) return null;
+
+  try {
+    const endpoint = `${cfg.url}/rest/v1/${encodeURIComponent(
+      cfg.tableName
+    )}?select=*&order=updated_at.desc`;
+    const res = await fetch(endpoint, {
+      method: 'GET',
+      headers: buildSupabaseHeaders(cfg.anonKey),
+      cache: 'no-store',
+    });
+
+    if (!res.ok) return null;
+    const rows = await res.json();
+    if (!Array.isArray(rows)) return null;
+
+    const metaRow = rows.find((r) => r?.id === TAXONOMY_META_ROW_ID);
+    if (metaRow?.payload && typeof window !== 'undefined') {
+      try {
+        if (Array.isArray(metaRow.payload.subjects)) {
+          window.localStorage.setItem(
+            'OMNI_SUBJECTS_AND_TOPICS_V2',
+            JSON.stringify(metaRow.payload.subjects)
+          );
+        }
+        if (Array.isArray(metaRow.payload.sources)) {
+          window.localStorage.setItem(
+            'OMNI_CUSTOM_SOURCES_LIST_V1',
+            JSON.stringify(metaRow.payload.sources)
+          );
+        }
+      } catch {
+        // Bỏ qua lỗi ghi localStorage
+      }
+    }
+
+    return rows
+      .filter((r) => r && r.id !== TAXONOMY_META_ROW_ID)
+      .map((r) => {
+        if (r.payload && typeof r.payload === 'object') {
+          return {
+            ...r.payload,
+            id: String(r.id || r.payload.id),
+            updatedAt: String(
+              r.updated_at || r.payload.updatedAt || new Date().toISOString()
+            ),
+          } as ErrorLogItem;
+        }
+        return r as ErrorLogItem;
+      });
   } catch {
-    return mirrorLogs.length > 0 ? mirrorLogs : null;
+    return null;
   }
 }
 
 export async function upsertLogsToSupabase(
-  items: ErrorLogItem | ErrorLogItem[]
+  itemsOrSingle: ErrorLogItem | ErrorLogItem[]
 ): Promise<boolean> {
-  const list = Array.isArray(items) ? items : [items];
-  if (list.length === 0) return true;
+  const cfg = getSupabaseRuntimeConfig();
+  if (!cfg.isConfigured) return false;
 
-  // Lưu ngay vào bộ nhớ bền vững trên trình duyệt trước khi gửi lên Cloud
-  const currentMirror = readLocalMirror();
-  const byId = new Map<string, ErrorLogItem>();
-  currentMirror.forEach((it) => byId.set(it.id, it));
-  list.forEach((it) => byId.set(it.id, it));
-  writeLocalMirror(Array.from(byId.values()));
+  const list = Array.isArray(itemsOrSingle) ? itemsOrSingle : [itemsOrSingle];
+  const nowIso = new Date().toISOString();
 
-  const body = list.map((item) => ({
-    id: item.id,
-    subject_id: item.subjectId,
-    payload: item,
-    updated_at: item.updatedAt || new Date().toISOString(),
-  }));
+  const rowsToUpsert: Array<Record<string, unknown>> = list
+    .filter((it) => it && it.id)
+    .map((it) => ({
+      id: String(it.id),
+      payload: it,
+      updated_at: it.updatedAt || nowIso,
+    }));
+
+  if (typeof window !== 'undefined') {
+    try {
+      const rawSubs = window.localStorage.getItem(
+        'OMNI_SUBJECTS_AND_TOPICS_V2'
+      );
+      const rawSources = window.localStorage.getItem(
+        'OMNI_CUSTOM_SOURCES_LIST_V1'
+      );
+      if (rawSubs || rawSources) {
+        rowsToUpsert.push({
+          id: TAXONOMY_META_ROW_ID,
+          payload: {
+            subjects: rawSubs ? JSON.parse(rawSubs) : undefined,
+            sources: rawSources ? JSON.parse(rawSources) : undefined,
+            updatedAt: nowIso,
+          },
+          updated_at: nowIso,
+        });
+      }
+    } catch {
+      // Bỏ qua
+    }
+  }
+
+  if (rowsToUpsert.length === 0) return true;
 
   try {
-    const res = await fetch(
-      `${SUPABASE_REST_URL}/omni_error_logs?on_conflict=id`,
-      {
-        method: 'POST',
-        headers: getHeaders('resolution=merge-duplicates,return=minimal'),
-        body: JSON.stringify(body),
-      }
-    );
+    const endpoint = `${cfg.url}/rest/v1/${encodeURIComponent(
+      cfg.tableName
+    )}?on_conflict=id`;
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: buildSupabaseHeaders(
+        cfg.anonKey,
+        'resolution=merge-duplicates,return=minimal'
+      ),
+      body: JSON.stringify(rowsToUpsert),
+    });
+
     return res.ok;
   } catch {
     return false;
@@ -112,17 +258,17 @@ export async function upsertLogsToSupabase(
 }
 
 export async function deleteLogFromSupabase(id: string): Promise<boolean> {
-  const currentMirror = readLocalMirror().filter((it) => it.id !== id);
-  writeLocalMirror(currentMirror);
+  const cfg = getSupabaseRuntimeConfig();
+  if (!cfg.isConfigured || !id) return false;
 
   try {
-    const res = await fetch(
-      `${SUPABASE_REST_URL}/omni_error_logs?id=eq.${encodeURIComponent(id)}`,
-      {
-        method: 'DELETE',
-        headers: getHeaders('return=minimal'),
-      }
-    );
+    const endpoint = `${cfg.url}/rest/v1/${encodeURIComponent(
+      cfg.tableName
+    )}?id=eq.${encodeURIComponent(id)}`;
+    const res = await fetch(endpoint, {
+      method: 'DELETE',
+      headers: buildSupabaseHeaders(cfg.anonKey, 'return=minimal'),
+    });
     return res.ok;
   } catch {
     return false;
